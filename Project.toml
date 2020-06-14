@@ -1,0 +1,13 @@
+name = "EmDee"
+uuid = "cf372323-8dcc-49dc-8713-5e47f33608e1"
+authors = ["Charlles Abreu <abreu@eq.ufrj.br> and contributors"]
+version = "0.1.0"
+
+[compat]
+julia = "1"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]
