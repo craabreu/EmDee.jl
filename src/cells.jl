@@ -1,6 +1,6 @@
 export Cells, update_cells!
 
-using CUDA
+import CUDA
 CUDA.allowscalar(false)
 
 mutable struct Cells
@@ -41,8 +41,8 @@ function neighbor_cells(L, cutoff, M)
 end
 
 function distribute!(head, next, index)
-    first = (blockIdx().x - 1) * blockDim().x + threadIdx().x
-    stride = blockDim().x * gridDim().x
+    first = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
+    stride = CUDA.blockDim().x * CUDA.gridDim().x
     for icell = first:stride:length(head)
         head[icell] = 0
         for i = 1:length(index)
@@ -56,18 +56,18 @@ function distribute!(head, next, index)
 end
 
 function clean_cells!(head, next, index, basket_head, basket_count, r, L, M)
-    nbytes = sizeof(Int32)*blockDim().x
-    thread_head = @cuDynamicSharedMem(Int32, blockDim().x)
-    thread_tail = @cuDynamicSharedMem(Int32, blockDim().x, offset=nbytes)
-    thread_count = @cuDynamicSharedMem(Int32, blockDim().x, offset=2*nbytes)
-    tid = threadIdx().x
-    bid = blockIdx().x
-    num_threads = blockDim().x
+    num_threads = CUDA.blockDim().x
+    nbytes = sizeof(Int32)*num_threads
+    thread_head = CUDA.@cuDynamicSharedMem(Int32, num_threads)
+    thread_tail = CUDA.@cuDynamicSharedMem(Int32, num_threads, offset=nbytes)
+    thread_count = CUDA.@cuDynamicSharedMem(Int32, num_threads, offset=2*nbytes)
+    tid = CUDA.threadIdx().x
+    bid = CUDA.blockIdx().x
     thread_head[tid] = 0
     thread_tail[tid] = 0
     thread_count[tid] = 0
     first = (bid - 1)*num_threads + tid
-    stride = num_threads*gridDim().x
+    stride = num_threads*CUDA.gridDim().x
     for icell = first:stride:length(head)
         if head[icell] != 0
             cell_index = icell - 1
@@ -137,8 +137,8 @@ function clean_cells!(head, next, index, basket_head, basket_count, r, L, M)
 end
 
 function collect_baskets!(dislocated, basket_count, basket_head, next)
-    first = (blockIdx().x - 1) * blockDim().x + threadIdx().x
-    stride = blockDim().x * gridDim().x
+    first = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
+    stride = CUDA.blockDim().x * CUDA.gridDim().x
     for ibasket = first:stride:length(basket_head)
         position = 0
         for i = 1:ibasket-1
@@ -156,8 +156,8 @@ function collect_baskets!(dislocated, basket_count, basket_head, next)
 end
 
 function renew_cells!(head, next, collected, count, index)
-    first = (blockIdx().x - 1) * blockDim().x + threadIdx().x
-    stride = blockDim().x * gridDim().x
+    first = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
+    stride = CUDA.blockDim().x * CUDA.gridDim().x
     for icell = first:stride:length(head)
         cell_index = icell - 1
         for position = 1:last(count)
@@ -171,11 +171,11 @@ function renew_cells!(head, next, collected, count, index)
     return nothing
 end
 
-function Cells(r, L, cutoff; ndiv=2, num_threads=256)
+function Cells(r::CUDA.CuArray{T,2}, L, cutoff; ndiv=2, num_threads=256) where {T<:Number}
     M = cells_per_dimension(L, cutoff, ndiv)
-    neighbors = CUDA.cu(neighbor_cells(L, cutoff, M))
+    neighbors = neighbor_cells(L, cutoff, M)
     s = r'/L
-    index = map(x->floor(Int32, x), M*(s .- floor.(s)))*cu([1, M, M^2])
+    index = map(x->floor(Int32, x), M*(s .- floor.(s)))*CUDA.cu([1, M, M^2])
     num_cells = M^3
     num_particles = size(r, 2)
     num_baskets = ceil(Int, num_cells/num_threads)
@@ -184,19 +184,19 @@ function Cells(r, L, cutoff; ndiv=2, num_threads=256)
     collected = CUDA.zeros(num_particles)
     basket_head = CUDA.zeros(num_baskets)
     basket_count = CUDA.zeros(num_baskets)
-    @cuda threads=num_threads blocks=num_baskets distribute!(head, next, index)
+    CUDA.@cuda threads=num_threads blocks=num_baskets distribute!(head, next, index)
     return Cells(M, cutoff, neighbors, head, next, index, collected,
                  num_threads, num_baskets, basket_head, basket_count)
 end
 
 function update_cells!(cells, r, L)
-    @cuda threads=cells.num_threads blocks=cells.num_baskets shmem=12*cells.num_threads clean_cells!(
+    CUDA.@cuda threads=cells.num_threads blocks=cells.num_baskets shmem=12*cells.num_threads clean_cells!(
         cells.head, cells.next, cells.index, cells.basket_head, cells.basket_count, r, L, cells.M
     )
-    @cuda threads=cells.num_threads blocks=ceil(Int, cells.num_baskets/cells.num_threads) collect_baskets!(
+    CUDA.@cuda threads=cells.num_threads blocks=ceil(Int, cells.num_baskets/cells.num_threads) collect_baskets!(
         cells.collected, cells.basket_count, cells.basket_head, cells.next
     )
-    @cuda threads=cells.num_threads blocks=cells.num_baskets renew_cells!(
+    CUDA.@cuda threads=cells.num_threads blocks=cells.num_baskets renew_cells!(
         cells.head, cells.next, cells.collected, cells.basket_count, cells.index
     )
     return nothing
