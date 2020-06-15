@@ -4,12 +4,17 @@ using CUDA
 CUDA.allowscalar(false)
 
 mutable struct Cells
-    M
-    neighbors
-    head
-    next
-    index
-    collected
+    M::Int32
+    cutoff::Float32
+    neighbors::CUDA.CuArray{Int32,2}
+    head::CUDA.CuArray{Int32,1}
+    next::CUDA.CuArray{Int32,1}
+    index::CUDA.CuArray{Int32,1}
+    collected::CUDA.CuArray{Int32,1}
+    num_threads::Int32
+    num_baskets::Int32
+    basket_head::CUDA.CuArray{Int32,1}
+    basket_count::CUDA.CuArray{Int32,1}
 end
 
 function index2voxel(index, M)
@@ -30,7 +35,7 @@ cells_per_dimension(L, cutoff, ndiv) = floor(Int32, ndiv*L/cutoff)
 function neighbor_cells(L, cutoff, M)
     pbc(x) = x < 0 ? x + M : (x >= M ? x - M : x)
     neighbor(index, vector) = (Array{Int32}([1, M, M^2]')*pbc.(index2voxel(index, M) + vector))[1]
-    vectors = neighbor_vectors(M*cutoff/L)
+    vectors = stencil_vectors(M*cutoff/L)
     neighbors = [Int32(neighbor(i, v)) for v in vectors, i in 0:(M^3-1)]
     return neighbors
 end
@@ -169,29 +174,30 @@ end
 function Cells(r, L, cutoff; ndiv=2, num_threads=256)
     M = cells_per_dimension(L, cutoff, ndiv)
     neighbors = CUDA.cu(neighbor_cells(L, cutoff, M))
-    s = r/L
-    index = CUDA.cu(Array{Int32}([1, M, M^2]'))*map(x->floor(Int32, x), M*(s .- floor.(s)))
-    head = CUDA.fill(Int32(0), M^3)
-    next = CUDA.fill(Int32(0), size(r, 2))
-    @cuda threads=num_threads blocks=ceil(Int, M^3/num_threads) distribute!(
-        head, next, index
-    )
-    collected = CUDA.fill(Int32(0), size(r, 2))
-    return Cells(M, neighbors, head, next, index, collected)
+    s = r'/L
+    index = map(x->floor(Int32, x), M*(s .- floor.(s)))*cu([1, M, M^2])
+    num_cells = M^3
+    num_particles = size(r, 2)
+    num_baskets = ceil(Int, num_cells/num_threads)
+    head = CUDA.zeros(num_cells)
+    next = CUDA.zeros(num_particles)
+    collected = CUDA.zeros(num_particles)
+    basket_head = CUDA.zeros(num_baskets)
+    basket_count = CUDA.zeros(num_baskets)
+    @cuda threads=num_threads blocks=num_baskets distribute!(head, next, index)
+    return Cells(M, cutoff, neighbors, head, next, index, collected,
+                 num_threads, num_baskets, basket_head, basket_count)
 end
 
-function update_cells!(cells, r, L; num_threads=256)
-    num_baskets = ceil(Int, cells.M^3/num_threads)
-    basket_head = CUDA.fill(Int32(0), num_baskets)
-    basket_count = CUDA.fill(Int32(0), num_baskets)
-    @cuda threads=num_threads blocks=num_baskets shmem=num_threads*12 clean_cells!(
-        cells.head, cells.next, cells.index, basket_head, basket_count, r, L, cells.M
+function update_cells!(cells, r, L)
+    @cuda threads=cells.num_threads blocks=cells.num_baskets shmem=12*cells.num_threads clean_cells!(
+        cells.head, cells.next, cells.index, cells.basket_head, cells.basket_count, r, L, cells.M
     )
-    @cuda threads=num_threads blocks=ceil(Int, num_baskets/num_threads) collect_baskets!(
-        cells.collected, basket_count, basket_head, cells.next
+    @cuda threads=cells.num_threads blocks=ceil(Int, cells.num_baskets/cells.num_threads) collect_baskets!(
+        cells.collected, cells.basket_count, cells.basket_head, cells.next
     )
-    @cuda threads=num_threads blocks=num_baskets renew_cells!(
-        cells.head, cells.next, cells.collected, basket_count, cells.index
+    @cuda threads=cells.num_threads blocks=cells.num_baskets renew_cells!(
+        cells.head, cells.next, cells.collected, cells.basket_count, cells.index
     )
     return nothing
 end
