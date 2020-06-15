@@ -1,7 +1,16 @@
-export create_cells, update_cells!
+export Cells, update_cells!
 
 using CUDA
 CUDA.allowscalar(false)
+
+mutable struct Cells
+    M
+    neighbors
+    head
+    next
+    index
+    collected
+end
 
 function index2voxel(index, M)
     k, l = divrem(index, M*M)
@@ -9,33 +18,32 @@ function index2voxel(index, M)
     return [i, j, k]
 end
 
-function neighbor_vectors(cutoff)
-    nmax = ceil(Int, cutoff)
+function neighbor_vectors(rc)
+    nmax = ceil(Int, rc)
     M = 1+2*nmax
     vectors = map(i->index2voxel(i, M) .- nmax, (M^3÷2+1):(M^3-1))
-    return filter((x->sum(x.^2) < cutoff^2) ∘ (x->abs.(x).-1), vectors)
+    return filter((x->sum(x.^2) < rc^2) ∘ (x->abs.(x).-1), vectors)
 end
 
-function neighbor_cells(L, rc, ndiv=2)
-    M = ceil(Int32, ndiv*L/rc)
+cells_per_dimension(L, cutoff, ndiv) = ceil(Int32, ndiv*L/cutoff)
+
+function neighbor_cells(L, cutoff, M)
     pbc(x) = x < 0 ? x + M : (x >= M ? x - M : x)
     neighbor(index, vector) = (Array{Int32}([1, M, M^2]')*pbc.(index2voxel(index, M) + vector))[1]
-    vectors = neighbor_vectors(M*rc/L)
-    neighbors = [neighbor(i, v) for v in vectors, i in 0:(M^3-1)]
-    return M, neighbors
+    vectors = neighbor_vectors(M*cutoff/L)
+    neighbors = [Int32(neighbor(i, v)) for v in vectors, i in 0:(M^3-1)]
+    return neighbors
 end
 
-function distribute!(head, next, number, index)
+function distribute!(head, next, index)
     first = (blockIdx().x - 1) * blockDim().x + threadIdx().x
     stride = blockDim().x * gridDim().x
     for icell = first:stride:length(head)
         head[icell] = 0
-        number[icell] = 0
         for i = 1:length(index)
             if icell == index[i] + 1
                 next[i] = head[icell]
                 head[icell] = i
-                number[icell] += 1
             end
         end
     end
@@ -158,25 +166,32 @@ function renew_cells!(head, next, collected, count, index)
     return nothing
 end
 
-function create_cells(r, L, cutoff; ndiv=2, num_threads=256)
-    M, neighbors = neighbor_cells(L, cutoff, ndiv)
+function Cells(r, L, cutoff; ndiv=2, num_threads=256)
+    M = cells_per_dimension(L, cutoff, ndiv)
+    neighbors = CUDA.cu(neighbor_cells(L, cutoff, M))
     s = r/L
     index = CUDA.cu(Array{Int32}([1, M, M^2]'))*map(x->floor(Int32, x), M*(s .- floor.(s)))
     head = CUDA.fill(Int32(0), M^3)
     next = CUDA.fill(Int32(0), size(r, 2))
-    number = CUDA.fill(Int32(0), M^3)
+    @cuda threads=num_threads blocks=ceil(Int, M^3/num_threads) distribute!(
+        head, next, index
+    )
     collected = CUDA.fill(Int32(0), size(r, 2))
-    number = CUDA.fill(Int32(0), M^3)
-    @cuda threads=num_threads blocks=ceil(Int, M^3/num_threads) distribute!(head, next, number, index)
-    return M, neighbors, head, next, index, collected
+    return Cells(M, neighbors, head, next, index, collected)
 end
 
-function update_cells!(head, next, index, collected, r, L, M; num_threads=256)
-    num_baskets = ceil(Int, M^3/num_threads)
+function update_cells!(cells, r, L; num_threads=256)
+    num_baskets = ceil(Int, cells.M^3/num_threads)
     basket_head = CUDA.fill(Int32(0), num_baskets)
     basket_count = CUDA.fill(Int32(0), num_baskets)
-    @cuda threads=num_threads blocks=num_baskets shmem=num_threads*12 clean_cells!(head, next, index, basket_head, basket_count, r, L, M)
-    @cuda threads=num_threads blocks=ceil(Int, num_baskets/num_threads) collect_baskets!(collected, basket_count, basket_head, next)
-    @cuda threads=num_threads blocks=num_baskets renew_cells!(head, next, collected, basket_count, index)
+    @cuda threads=num_threads blocks=num_baskets shmem=num_threads*12 clean_cells!(
+        cells.head, cells.next, cells.index, basket_head, basket_count, r, L, cells.M
+    )
+    @cuda threads=num_threads blocks=ceil(Int, num_baskets/num_threads) collect_baskets!(
+        cells.collected, basket_count, basket_head, cells.next
+    )
+    @cuda threads=num_threads blocks=num_baskets renew_cells!(
+        cells.head, cells.next, cells.collected, basket_count, cells.index
+    )
     return nothing
 end

@@ -8,10 +8,10 @@ function test_cells()
     cutoff = 0.2
     x = CUDA.rand(Float32, 3, N)
     y = x .+ 0.01
-    M, neighbors, head_x, next_x, index_x, collected = create_cells(x, L, cutoff)
-    M, neighbors, head_y, next_y, index_y, collected = create_cells(y, L, cutoff)
-    update_cells!(head_x, next_x, index_x, collected, y, L, M)
-    return all(Array(index_x) .== Array(index_y))
+    cells_x = Cells(x, L, cutoff)
+    cells_y = Cells(y, L, cutoff)
+    update_cells!(cells_x, y, L)
+    return all(Array(cells_x.index) .== Array(cells_y.index))
 end
 
 @testset "EmDee.jl" begin
