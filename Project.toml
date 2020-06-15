@@ -3,6 +3,9 @@ uuid = "cf372323-8dcc-49dc-8713-5e47f33608e1"
 authors = ["Charlles Abreu <abreu@eq.ufrj.br> and contributors"]
 version = "0.1.0"
 
+[deps]
+CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
+
 [compat]
 julia = "1"
 
