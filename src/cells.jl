@@ -18,14 +18,14 @@ function index2voxel(index, M)
     return [i, j, k]
 end
 
-function neighbor_vectors(rc)
+function stencil_vectors(rc)
     nmax = ceil(Int, rc)
     M = 1+2*nmax
     vectors = map(i->index2voxel(i, M) .- nmax, (M^3÷2+1):(M^3-1))
     return filter((x->sum(x.^2) < rc^2) ∘ (x->abs.(x).-1), vectors)
 end
 
-cells_per_dimension(L, cutoff, ndiv) = ceil(Int32, ndiv*L/cutoff)
+cells_per_dimension(L, cutoff, ndiv) = floor(Int32, ndiv*L/cutoff)
 
 function neighbor_cells(L, cutoff, M)
     pbc(x) = x < 0 ? x + M : (x >= M ? x - M : x)
