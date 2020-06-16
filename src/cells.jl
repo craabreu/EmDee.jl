@@ -6,7 +6,7 @@ CUDA.allowscalar(false)
 mutable struct Cells
     M::Int32
     cutoff::Float32
-    neighbors::CUDA.CuArray{Int32,2}
+    nearby_cells::CUDA.CuArray{Int32,2}
     head::CUDA.CuArray{Int32,1}
     next::CUDA.CuArray{Int32,1}
     index::CUDA.CuArray{Int32,1}
@@ -32,12 +32,12 @@ end
 
 cells_per_dimension(L, cutoff, ndiv) = floor(Int32, ndiv*L/cutoff)
 
-function neighbor_cells(L, cutoff, M)
+function surrounding_cells(L, cutoff, M)
     pbc(x) = x < 0 ? x + M : (x >= M ? x - M : x)
-    neighbor(index, vector) = (Array{Int32}([1, M, M^2]')*pbc.(index2voxel(index, M) + vector))[1]
+    nearby_cell(index, vector) = (Array{Int32}([1, M, M^2]')*pbc.(index2voxel(index, M) + vector))[1]
     vectors = stencil_vectors(M*cutoff/L)
-    neighbors = [Int32(neighbor(i, v)) for v in vectors, i in 0:(M^3-1)]
-    return neighbors
+    nearby_cells = [Int32(nearby_cell(i, v)) for v in vectors, i in 0:(M^3-1)]
+    return nearby_cells
 end
 
 function distribute!(head, next, index)
@@ -173,19 +173,19 @@ end
 
 function Cells(r::CUDA.CuArray{T,2}, L, cutoff; ndiv=2, num_threads=256) where {T<:Number}
     M = cells_per_dimension(L, cutoff, ndiv)
-    neighbors = neighbor_cells(L, cutoff, M)
+    nearby_cells = surrounding_cells(L, cutoff, M)
     s = r'/L
     index = map(x->floor(Int32, x), M*(s .- floor.(s)))*CUDA.cu([1, M, M^2])
     num_cells = M^3
     num_particles = size(r, 2)
     num_baskets = ceil(Int, num_cells/num_threads)
-    head = CUDA.zeros(num_cells)
-    next = CUDA.zeros(num_particles)
-    collected = CUDA.zeros(num_particles)
-    basket_head = CUDA.zeros(num_baskets)
-    basket_count = CUDA.zeros(num_baskets)
+    head = CUDA.zeros(Int32, num_cells)
+    next = CUDA.zeros(Int32, num_particles)
+    collected = CUDA.zeros(Int32, num_particles)
+    basket_head = CUDA.zeros(Int32, num_baskets)
+    basket_count = CUDA.zeros(Int32, num_baskets)
     CUDA.@cuda threads=num_threads blocks=num_baskets distribute!(head, next, index)
-    return Cells(M, cutoff, neighbors, head, next, index, collected,
+    return Cells(M, cutoff, nearby_cells, head, next, index, collected,
                  num_threads, num_baskets, basket_head, basket_count)
 end
 
