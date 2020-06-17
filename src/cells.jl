@@ -10,6 +10,7 @@ mutable struct Cells
     head::CUDA.CuArray{Int32,1}
     next::CUDA.CuArray{Int32,1}
     index::CUDA.CuArray{Int32,1}
+    population::CUDA.CuArray{Int32,1}
     collected::CUDA.CuArray{Int32,1}
     num_threads::Int32
     num_baskets::Int32
@@ -40,22 +41,24 @@ function surrounding_cells(L, cutoff, M)
     return nearby_cells
 end
 
-function distribute!(head, next, index)
+function distribute!(head, next, index, population)
     first = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
     stride = CUDA.blockDim().x * CUDA.gridDim().x
     for icell = first:stride:length(head)
         head[icell] = 0
+        population[icell] = 0
         for i = 1:length(index)
             if icell == index[i] + 1
                 next[i] = head[icell]
                 head[icell] = i
+                population[icell] += 1
             end
         end
     end
     return nothing
 end
 
-function clean_cells!(head, next, index, basket_head, basket_count, r, L, M)
+function clean_cells!(head, next, index, population, basket_head, basket_count, r, L, M)
     num_threads = CUDA.blockDim().x
     nbytes = sizeof(Int32)*num_threads
     thread_head = CUDA.@cuDynamicSharedMem(Int32, num_threads)
@@ -92,6 +95,7 @@ function clean_cells!(head, next, index, basket_head, basket_count, r, L, M)
                     (thread_head[tid] == 0) && (thread_tail[tid] = removed)
                     thread_head[tid] = removed
                     thread_count[tid] += 1
+                    population[icell] -= 1
                 end
             end
             current = head[icell]
@@ -109,6 +113,7 @@ function clean_cells!(head, next, index, basket_head, basket_count, r, L, M)
                 (thread_head[tid] == 0) && (thread_tail[tid] = removed)
                 thread_head[tid] = removed
                 thread_count[tid] += 1
+                population[icell] -= 1
             end
         end
     end
@@ -136,7 +141,7 @@ function clean_cells!(head, next, index, basket_head, basket_count, r, L, M)
     return nothing
 end
 
-function collect_baskets!(dislocated, basket_count, basket_head, next)
+function collect_baskets!(collected, basket_count, basket_head, next)
     first = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
     stride = CUDA.blockDim().x * CUDA.gridDim().x
     for ibasket = first:stride:length(basket_head)
@@ -147,7 +152,7 @@ function collect_baskets!(dislocated, basket_count, basket_head, next)
         current = basket_head[ibasket]
         while current != 0
             position += 1
-            dislocated[position] = current
+            collected[position] = current
             current = next[current]
         end
         basket_count[ibasket] = position
@@ -155,7 +160,7 @@ function collect_baskets!(dislocated, basket_count, basket_head, next)
     return nothing
 end
 
-function renew_cells!(head, next, collected, count, index)
+function renew_cells!(head, next, population, collected, count, index)
     first = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
     stride = CUDA.blockDim().x * CUDA.gridDim().x
     for icell = first:stride:length(head)
@@ -165,6 +170,7 @@ function renew_cells!(head, next, collected, count, index)
             if index[i] == cell_index
                 next[i] = head[icell]
                 head[icell] = i
+                population[icell] += 1
             end
         end
     end
@@ -181,11 +187,12 @@ function Cells(r::CUDA.CuArray{T,2}, L, cutoff; ndiv=2, num_threads=256) where {
     num_baskets = ceil(Int, num_cells/num_threads)
     head = CUDA.zeros(Int32, num_cells)
     next = CUDA.zeros(Int32, num_particles)
+    population = CUDA.zeros(Int32, num_cells)
     collected = CUDA.zeros(Int32, num_particles)
     basket_head = CUDA.zeros(Int32, num_baskets)
     basket_count = CUDA.zeros(Int32, num_baskets)
-    CUDA.@cuda threads=num_threads blocks=num_baskets distribute!(head, next, index)
-    return Cells(M, cutoff, nearby_cells, head, next, index, collected,
+    CUDA.@cuda threads=num_threads blocks=num_baskets distribute!(head, next, index, population)
+    return Cells(M, cutoff, nearby_cells, head, next, index, population, collected,
                  num_threads, num_baskets, basket_head, basket_count)
 end
 
@@ -195,7 +202,8 @@ function update_cells!(cells, r, L)
         blocks=cells.num_baskets,
         shmem=3*cells.num_threads*sizeof(Int32),
         clean_cells!(
-            cells.head, cells.next, cells.index, cells.basket_head, cells.basket_count,
+            cells.head, cells.next, cells.index, cells.population,
+            cells.basket_head, cells.basket_count,
             r, L, cells.M
         )
     )
@@ -210,7 +218,7 @@ function update_cells!(cells, r, L)
         threads=cells.num_threads,
         blocks=cells.num_baskets,
         renew_cells!(
-            cells.head, cells.next, cells.collected, cells.basket_count, cells.index
+            cells.head, cells.next, cells.population, cells.collected, cells.basket_count, cells.index
         )
     )
     return nothing
@@ -227,6 +235,70 @@ function find_action_partners!(action_partner, action_previous, action_count, pa
     i = (bid - 1)*num_threads + tid
     if i <= num_particles
         neighbor = CUDA.@cuDynamicSharedMem(Int32, max_neighbors_per_atom, offset=(num_threads+(tid-1)*max_neighbors_per_atom)*sizeof(Int32))
+        s1i = s[1,i]
+        s2i = s[2,i]
+        s3i = s[3,i]
+        rcsq = rc^2
+        inside(dx, dy, dz) = (dx-round(dx))^2 + (dy-round(dy))^2 + (dz-round(dz))^2  <= rcsq
+        n = 0
+        icell = index[i] + 1
+        j = head[icell]
+        while j != 0
+            if j > i && inside(s[1,j]-s1i, s[2,j]-s2i, s[3,j]-s3i)
+                n += 1
+                n <= max_neighbors_per_atom && (neighbor[n] = j)
+            end
+            j = next[j]
+        end
+        for k = 1:size(nearby_cells, 1)
+            jcell = nearby_cells[k,icell] + 1
+            j = head[jcell]
+            while j != 0
+                if inside(s[1,j]-s1i, s[2,j]-s2i, s[3,j]-s3i)
+                    n += 1
+                    n <= max_neighbors_per_atom && (neighbor[n] = j)
+                end
+                j = next[j]
+            end
+        end
+        counter[tid] = min(n, max_neighbors_per_atom)
+        action_count[i] = n
+    end
+    CUDA.sync_threads()
+    if i <= num_particles
+        previous_in_block = 0
+        for t = 1:tid-1
+            previous_in_block += counter[t]
+        end
+        previous = (bid - 1)*max_pairs_per_block + previous_in_block
+        upper_limit = bid*max_pairs_per_block
+        for n = 1:counter[tid]
+            previous+n <= upper_limit && (action_partner[previous+n] = neighbor[n])
+        end
+        action_previous[i] = previous
+        if tid == num_threads || i == num_particles
+            pair_count[bid] = previous_in_block + counter[tid]
+        end
+    end
+    CUDA.sync_threads()
+    previous = (bid - 1)*max_pairs_per_block
+    for n = pair_count[bid]+tid:num_threads:max_pairs_per_block
+        action_partner[previous+n] = 0
+    end
+    return nothing
+end
+
+function find_action_partners_bitarray!(action_partner, action_previous, action_count, pair_count,
+                               head, next, index, nearby_cells, rc, s,
+                               max_pairs_per_block, max_neighbors_per_atom)
+    num_threads = CUDA.blockDim().x
+    tid = CUDA.threadIdx().x
+    bid = CUDA.blockIdx().x
+    counter = CUDA.@cuDynamicSharedMem(Int32, num_threads)
+    num_particles = length(index)
+    i = (bid - 1)*num_threads + tid
+    if i <= num_particles
+        is_neighbor = CUDA.@cuDynamicSharedMem(Int32, max_neighbors_per_atom, offset=(num_threads+(tid-1)*max_neighbors_per_atom)*sizeof(Int32))
         s1i = s[1,i]
         s2i = s[2,i]
         s3i = s[3,i]
