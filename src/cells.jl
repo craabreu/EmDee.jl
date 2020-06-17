@@ -28,7 +28,7 @@ end
 function stencil_vectors(rc, action)
     nmax = ceil(Int, rc)
     M = 1+2*nmax
-    range = action ? (0:M^3÷2) : (M^3÷2+1:M^3-1)
+    range = action ? (0:M^3÷2-1) : (M^3÷2+1:M^3-1)
     vectors = map(i->index2voxel(i, M) .- nmax, range)
     return filter((x->sum(x.^2) < rc^2) ∘ (x->abs.(x).-1), vectors)
 end
