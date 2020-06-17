@@ -6,7 +6,8 @@ CUDA.allowscalar(false)
 mutable struct Cells
     M::Int32
     cutoff::Float32
-    nearby_cells::CUDA.CuArray{Int32,2}
+    action_cells::CUDA.CuArray{Int32,2}
+    reaction_cells::CUDA.CuArray{Int32,2}
     head::CUDA.CuArray{Int32,1}
     next::CUDA.CuArray{Int32,1}
     index::CUDA.CuArray{Int32,1}
@@ -24,19 +25,20 @@ function index2voxel(index, M)
     return [i, j, k]
 end
 
-function stencil_vectors(rc)
+function stencil_vectors(rc, action)
     nmax = ceil(Int, rc)
     M = 1+2*nmax
-    vectors = map(i->index2voxel(i, M) .- nmax, (M^3÷2+1):(M^3-1))
+    range = action ? (0:M^3÷2) : (M^3÷2+1:M^3-1)
+    vectors = map(i->index2voxel(i, M) .- nmax, range)
     return filter((x->sum(x.^2) < rc^2) ∘ (x->abs.(x).-1), vectors)
 end
 
 cells_per_dimension(L, cutoff, ndiv) = floor(Int32, ndiv*L/cutoff)
 
-function surrounding_cells(L, cutoff, M)
+function surrounding_cells(L, cutoff, M, action)
     pbc(x) = x < 0 ? x + M : (x >= M ? x - M : x)
     nearby_cell(index, vector) = (Array{Int32}([1, M, M^2]')*pbc.(index2voxel(index, M) + vector))[1]
-    vectors = stencil_vectors(M*cutoff/L)
+    vectors = stencil_vectors(M*cutoff/L, action)
     nearby_cells = [Int32(nearby_cell(i, v)) for v in vectors, i in 0:(M^3-1)]
     return nearby_cells
 end
@@ -179,7 +181,8 @@ end
 
 function Cells(r::CUDA.CuArray{T,2}, L, cutoff; ndiv=2, num_threads=256) where {T<:Number}
     M = cells_per_dimension(L, cutoff, ndiv)
-    nearby_cells = surrounding_cells(L, cutoff, M)
+    action_cells = surrounding_cells(L, cutoff, M, true)
+    reaction_cells = surrounding_cells(L, cutoff, M, false)
     s = r'/L
     index = map(x->floor(Int32, x), M*(s .- floor.(s)))*CUDA.cu([1, M, M^2])
     num_cells = M^3
@@ -192,7 +195,7 @@ function Cells(r::CUDA.CuArray{T,2}, L, cutoff; ndiv=2, num_threads=256) where {
     basket_head = CUDA.zeros(Int32, num_baskets)
     basket_count = CUDA.zeros(Int32, num_baskets)
     CUDA.@cuda threads=num_threads blocks=num_baskets distribute!(head, next, index, population)
-    return Cells(M, cutoff, nearby_cells, head, next, index, population, collected,
+    return Cells(M, cutoff, action_cells, reaction_cells, head, next, index, population, collected,
                  num_threads, num_baskets, basket_head, basket_count)
 end
 
@@ -225,8 +228,8 @@ function update_cells!(cells, r, L)
 end
 
 function find_action_partners!(action_partner, action_previous, action_count, pair_count,
-                               head, next, index, nearby_cells, rc, s,
-                               max_pairs_per_block, max_neighbors_per_atom)
+                               head, next, index, population, action_cells, reaction_cells,
+                               rc, s, max_pairs_per_block, max_neighbors_per_atom)
     num_threads = CUDA.blockDim().x
     tid = CUDA.threadIdx().x
     bid = CUDA.blockIdx().x
@@ -250,72 +253,8 @@ function find_action_partners!(action_partner, action_previous, action_count, pa
             end
             j = next[j]
         end
-        for k = 1:size(nearby_cells, 1)
-            jcell = nearby_cells[k,icell] + 1
-            j = head[jcell]
-            while j != 0
-                if inside(s[1,j]-s1i, s[2,j]-s2i, s[3,j]-s3i)
-                    n += 1
-                    n <= max_neighbors_per_atom && (neighbor[n] = j)
-                end
-                j = next[j]
-            end
-        end
-        counter[tid] = min(n, max_neighbors_per_atom)
-        action_count[i] = n
-    end
-    CUDA.sync_threads()
-    if i <= num_particles
-        previous_in_block = 0
-        for t = 1:tid-1
-            previous_in_block += counter[t]
-        end
-        previous = (bid - 1)*max_pairs_per_block + previous_in_block
-        upper_limit = bid*max_pairs_per_block
-        for n = 1:counter[tid]
-            previous+n <= upper_limit && (action_partner[previous+n] = neighbor[n])
-        end
-        action_previous[i] = previous
-        if tid == num_threads || i == num_particles
-            pair_count[bid] = previous_in_block + counter[tid]
-        end
-    end
-    CUDA.sync_threads()
-    previous = (bid - 1)*max_pairs_per_block
-    for n = pair_count[bid]+tid:num_threads:max_pairs_per_block
-        action_partner[previous+n] = 0
-    end
-    return nothing
-end
-
-function find_action_partners_bitarray!(action_partner, action_previous, action_count, pair_count,
-                               head, next, index, nearby_cells, rc, s,
-                               max_pairs_per_block, max_neighbors_per_atom)
-    num_threads = CUDA.blockDim().x
-    tid = CUDA.threadIdx().x
-    bid = CUDA.blockIdx().x
-    counter = CUDA.@cuDynamicSharedMem(Int32, num_threads)
-    num_particles = length(index)
-    i = (bid - 1)*num_threads + tid
-    if i <= num_particles
-        is_neighbor = CUDA.@cuDynamicSharedMem(Int32, max_neighbors_per_atom, offset=(num_threads+(tid-1)*max_neighbors_per_atom)*sizeof(Int32))
-        s1i = s[1,i]
-        s2i = s[2,i]
-        s3i = s[3,i]
-        rcsq = rc^2
-        inside(dx, dy, dz) = (dx-round(dx))^2 + (dy-round(dy))^2 + (dz-round(dz))^2  <= rcsq
-        n = 0
-        icell = index[i] + 1
-        j = head[icell]
-        while j != 0
-            if j > i && inside(s[1,j]-s1i, s[2,j]-s2i, s[3,j]-s3i)
-                n += 1
-                n <= max_neighbors_per_atom && (neighbor[n] = j)
-            end
-            j = next[j]
-        end
-        for k = 1:size(nearby_cells, 1)
-            jcell = nearby_cells[k,icell] + 1
+        for k = 1:size(action_cells, 1)
+            jcell = action_cells[k,icell] + 1
             j = head[jcell]
             while j != 0
                 if inside(s[1,j]-s1i, s[2,j]-s2i, s[3,j]-s3i)

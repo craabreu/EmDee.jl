@@ -12,7 +12,7 @@ function test_cells()
     cells_y = Cells(y, L, cutoff)
     update_cells!(cells_x, y, L)
     return all(Array(cells_x.index) .== Array(cells_y.index)) &&
-           all(Array(cells_x.population) .== Array(cells_y.index))
+           all(Array(cells_x.population) .== Array(cells_y.population))
 end
 
 @testset "EmDee.jl" begin
