@@ -20,7 +20,7 @@ mutable struct Cells
 end
 
 function index2voxel(index, M)
-    k, l = divrem(index, M*M)
+    k, l = divrem(index-1, M*M)
     j, i = divrem(l, M)
     return [i, j, k]
 end
@@ -28,7 +28,7 @@ end
 function stencil_vectors(rc, action)
     nmax = ceil(Int, rc)
     M = 1+2*nmax
-    range = action ? (0:M^3÷2-1) : (M^3÷2+1:M^3-1)
+    range = action ? (1:M^3÷2) : (M^3÷2+2:M^3)
     vectors = map(i->index2voxel(i, M) .- nmax, range)
     return filter((x->sum(x.^2) < rc^2) ∘ (x->abs.(x).-1), vectors)
 end
@@ -37,9 +37,9 @@ cells_per_dimension(L, cutoff, ndiv) = floor(Int32, ndiv*L/cutoff)
 
 function surrounding_cells(L, cutoff, M, action)
     pbc(x) = x < 0 ? x + M : (x >= M ? x - M : x)
-    nearby_cell(index, vector) = (Array{Int32}([1, M, M^2]')*pbc.(index2voxel(index, M) + vector))[1]
+    nearby_cell(index, vector) = 1 + (Array{Int32}([1, M, M^2]')*pbc.(index2voxel(index, M) + vector))[1]
     vectors = stencil_vectors(M*cutoff/L, action)
-    nearby_cells = [Int32(nearby_cell(i, v)) for v in vectors, i in 0:(M^3-1)]
+    nearby_cells = [Int32(nearby_cell(i, v)) for v in vectors, i in 1:M^3]
     return nearby_cells
 end
 
@@ -50,7 +50,7 @@ function distribute!(head, next, index, population)
         head[icell] = 0
         population[icell] = 0
         for i = 1:length(index)
-            if icell == index[i] + 1
+            if icell == index[i]
                 next[i] = head[icell]
                 head[icell] = i
                 population[icell] += 1
@@ -75,7 +75,6 @@ function clean_cells!(head, next, index, population, basket_head, basket_count, 
     stride = num_threads*CUDA.gridDim().x
     for icell = first:stride:length(head)
         if head[icell] != 0
-            cell_index = icell - 1
             previous = head[icell]
             current = next[previous]
             while current != 0
@@ -85,8 +84,8 @@ function clean_cells!(head, next, index, population, basket_head, basket_count, 
                 v1 = floor(Int32, M*(s1 - floor(s1)))
                 v2 = floor(Int32, M*(s2 - floor(s2)))
                 v3 = floor(Int32, M*(s3 - floor(s3)))
-                index[current] = v1 + (v2 + v3*M)*M
-                if index[current] == cell_index
+                index[current] = 1 + v1 + (v2 + v3*M)*M
+                if index[current] == icell
                     previous = current
                     current = next[current]
                 else
@@ -107,8 +106,8 @@ function clean_cells!(head, next, index, population, basket_head, basket_count, 
             v1 = floor(Int32, M*(s1 - floor(s1)))
             v2 = floor(Int32, M*(s2 - floor(s2)))
             v3 = floor(Int32, M*(s3 - floor(s3)))
-            index[current] = v1 + (v2 + v3*M)*M
-            if index[current] != cell_index
+            index[current] = 1 + v1 + (v2 + v3*M)*M
+            if index[current] != icell
                 removed = current
                 head[icell] = next[current]
                 next[removed] = thread_head[tid]
@@ -166,10 +165,9 @@ function renew_cells!(head, next, population, collected, count, index)
     first = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
     stride = CUDA.blockDim().x * CUDA.gridDim().x
     for icell = first:stride:length(head)
-        cell_index = icell - 1
         for position = 1:last(count)
             i = collected[position]
-            if index[i] == cell_index
+            if index[i] == icell
                 next[i] = head[icell]
                 head[icell] = i
                 population[icell] += 1
@@ -184,7 +182,7 @@ function Cells(r::CUDA.CuArray{T,2}, L, cutoff; ndiv=2, num_threads=256) where {
     action_cells = surrounding_cells(L, cutoff, M, true)
     reaction_cells = surrounding_cells(L, cutoff, M, false)
     s = r'/L
-    index = map(x->floor(Int32, x), M*(s .- floor.(s)))*CUDA.cu([1, M, M^2])
+    index = map(x->floor(Int32, x), M*(s .- floor.(s)))*CUDA.cu([1, M, M^2]) .+ 1
     num_cells = M^3
     num_particles = size(r, 2)
     num_baskets = ceil(Int, num_cells/num_threads)
@@ -244,7 +242,7 @@ function find_action_partners!(action_partner, action_previous, action_count, pa
         rcsq = rc^2
         inside(dx, dy, dz) = (dx-round(dx))^2 + (dy-round(dy))^2 + (dz-round(dz))^2  <= rcsq
         n = 0
-        icell = index[i] + 1
+        icell = index[i]
         j = head[icell]
         while j != 0
             if j > i && inside(s[1,j]-s1i, s[2,j]-s2i, s[3,j]-s3i)
@@ -254,7 +252,7 @@ function find_action_partners!(action_partner, action_previous, action_count, pa
             j = next[j]
         end
         for k = 1:size(action_cells, 1)
-            jcell = action_cells[k,icell] + 1
+            jcell = action_cells[k,icell]
             j = head[jcell]
             while j != 0
                 if inside(s[1,j]-s1i, s[2,j]-s2i, s[3,j]-s3i)
