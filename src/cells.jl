@@ -44,9 +44,8 @@ function surrounding_cells(L, cutoff, M, action)
 end
 
 function distribute!(head, next, index, population)
-    first = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
-    stride = CUDA.blockDim().x * CUDA.gridDim().x
-    for icell = first:stride:length(head)
+    icell = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
+    if icell <= length(head)
         head[icell] = 0
         population[icell] = 0
         for i = 1:length(index)
@@ -71,9 +70,8 @@ function clean_cells!(head, next, index, population, basket_head, basket_count, 
     thread_head[tid] = 0
     thread_tail[tid] = 0
     thread_count[tid] = 0
-    first = (bid - 1)*num_threads + tid
-    stride = num_threads*CUDA.gridDim().x
-    for icell = first:stride:length(head)
+    icell = (bid - 1)*num_threads + tid
+    if icell <= length(head)
         if head[icell] != 0
             previous = head[icell]
             current = next[previous]
@@ -143,9 +141,8 @@ function clean_cells!(head, next, index, population, basket_head, basket_count, 
 end
 
 function collect_baskets!(collected, basket_count, basket_head, next)
-    first = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
-    stride = CUDA.blockDim().x * CUDA.gridDim().x
-    for ibasket = first:stride:length(basket_head)
+    ibasket = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
+    if ibasket <= length(basket_head)
         position = 0
         for i = 1:ibasket-1
             position += basket_count[i]
@@ -162,9 +159,8 @@ function collect_baskets!(collected, basket_count, basket_head, next)
 end
 
 function renew_cells!(head, next, population, collected, count, index)
-    first = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
-    stride = CUDA.blockDim().x * CUDA.gridDim().x
-    for icell = first:stride:length(head)
+    icell = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
+    if icell <= length(head)
         for position = 1:last(count)
             i = collected[position]
             if index[i] == icell
