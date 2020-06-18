@@ -8,9 +8,9 @@ version = "0.5.0"
 
 [[Adapt]]
 deps = ["LinearAlgebra"]
-git-tree-sha1 = "fd04049c7dd78cfef0b06cdc1f0f181467655712"
+git-tree-sha1 = "9e31b9f5d3f9b5ec32c1d01fd8c05270bad10dc0"
 uuid = "79e6a3ab-5dfb-504d-930d-738a2a938a0e"
-version = "1.1.0"
+version = "2.0.0"
 
 [[Base64]]
 uuid = "2a0f44e3-6c83-55bd-87e4-b1978d98bd5f"
@@ -28,9 +28,9 @@ version = "0.4.1"
 
 [[CUDA]]
 deps = ["AbstractFFTs", "Adapt", "BinaryProvider", "CEnum", "DataStructures", "ExprTools", "GPUArrays", "GPUCompiler", "LLVM", "Libdl", "LinearAlgebra", "Logging", "MacroTools", "NNlib", "Pkg", "Printf", "Random", "Reexport", "Requires", "SparseArrays", "Statistics", "TimerOutputs"]
-git-tree-sha1 = "3d247bd2260259f86853e52584169ddeca648ebc"
+git-tree-sha1 = "e0f4849d30f574b568a2710c609842f308c0b7ff"
 uuid = "052768ef-5323-5732-b1bb-66c8b64840ba"
-version = "0.1.0"
+version = "1.0.0"
 
 [[DataStructures]]
 deps = ["InteractiveUtils", "OrderedCollections"]
@@ -49,15 +49,15 @@ version = "0.1.1"
 
 [[GPUArrays]]
 deps = ["AbstractFFTs", "Adapt", "LinearAlgebra", "Printf", "Random", "Serialization"]
-git-tree-sha1 = "d887693eb1bd5e1fd573262a978745481895ec7d"
+git-tree-sha1 = "ae20accf251c6da038fe33cbc2c53d5af7f51344"
 uuid = "0c68f7d7-f131-5f86-a1c3-88cf8149b2d7"
-version = "3.4.1"
+version = "4.0.0"
 
 [[GPUCompiler]]
 deps = ["DataStructures", "InteractiveUtils", "LLVM", "Libdl", "TimerOutputs", "UUIDs"]
-git-tree-sha1 = "7ed10d9c41b7bb392f3e645233e45ecf93217130"
+git-tree-sha1 = "65f7395a1245635f0c2279649fdbef09a1b0aa7b"
 uuid = "61eb1bfa-7361-4325-ad38-22787b887f55"
-version = "0.3.0"
+version = "0.4.0"
 
 [[InteractiveUtils]]
 deps = ["Markdown"]
