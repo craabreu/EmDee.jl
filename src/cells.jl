@@ -221,17 +221,19 @@ function update_cells!(cells, r, L)
     return nothing
 end
 
-function find_action_partners!(action_partner, action_previous, action_count, pair_count,
-                               head, next, index, population, action_cells, reaction_cells,
+function find_action_partners1!(action_partner, action_previous, action_count, pair_count,
+                               head, next, index, action_cells,
                                rc, s, max_pairs_per_block, max_neighbors_per_atom)
     num_threads = CUDA.blockDim().x
     tid = CUDA.threadIdx().x
     bid = CUDA.blockIdx().x
-    counter = CUDA.@cuDynamicSharedMem(Int32, num_threads)
+    overall_previous = CUDA.@cuDynamicSharedMem(Int32, 1)
+    tid == 1 && (overall_previous[1] = (bid - 1)*max_pairs_per_block)
+    counter = CUDA.@cuDynamicSharedMem(Int32, num_threads, offset=sizeof(Int32))
     num_particles = length(index)
     i = (bid - 1)*num_threads + tid
     if i <= num_particles
-        neighbor = CUDA.@cuDynamicSharedMem(Int32, max_neighbors_per_atom, offset=(num_threads+(tid-1)*max_neighbors_per_atom)*sizeof(Int32))
+        neighbor = CUDA.@cuDynamicSharedMem(Int32, max_neighbors_per_atom, offset=sizeof(Int32)+(num_threads+(tid-1)*max_neighbors_per_atom)*sizeof(Int32))
         s1i = s[1,i]
         s2i = s[2,i]
         s3i = s[3,i]
@@ -243,7 +245,11 @@ function find_action_partners!(action_partner, action_previous, action_count, pa
         while j != 0
             if j > i && inside(s[1,j]-s1i, s[2,j]-s2i, s[3,j]-s3i)
                 n += 1
-                n <= max_neighbors_per_atom && (neighbor[n] = j)
+                if n <= max_neighbors_per_atom
+                    neighbor[n] = j
+                else
+                    # distribute()
+                end
             end
             j = next[j]
         end
@@ -253,7 +259,11 @@ function find_action_partners!(action_partner, action_previous, action_count, pa
             while j != 0
                 if inside(s[1,j]-s1i, s[2,j]-s2i, s[3,j]-s3i)
                     n += 1
-                    n <= max_neighbors_per_atom && (neighbor[n] = j)
+                    if n <= max_neighbors_per_atom
+                        neighbor[n] = j
+                    else
+                        # distribute()
+                    end
                 end
                 j = next[j]
             end
@@ -262,6 +272,7 @@ function find_action_partners!(action_partner, action_previous, action_count, pa
         action_count[i] = n
     end
     CUDA.sync_threads()
+    
     if i <= num_particles
         previous_in_block = 0
         for t = 1:tid-1
@@ -284,3 +295,40 @@ function find_action_partners!(action_partner, action_previous, action_count, pa
     end
     return nothing
 end
+
+N = 2000
+L = 10.0f0
+cutoff = 2.0f0
+r = L*CUDA.rand(Float32, 3, N)
+cells = Cells(r, L, cutoff)
+
+density = N/L^3
+half_sphere_volume = 2π*cells.cutoff^3/3
+
+max_neighbors_per_atom = ceil(Int, density*half_sphere_volume)  # Number of neighbors per particle
+
+# max_neighbors_per_atom*(cells.num_threads + 1)*sizeof(Int32) = 49152
+# max_max_neighbors_per_atom = 49152÷(cells.num_threads*sizeof(UInt8)) - 1
+max_pairs_per_block = cells.num_threads
+num_blocks = ceil(Int32, N/cells.num_threads)
+action_partner = CUDA.zeros(Int32, max_pairs_per_block*num_blocks)
+action_previous = CUDA.zeros(Int32, N)
+action_count = CUDA.zeros(Int32, N)
+action_loc = CUDA.zeros(Int32, N)
+reaction_previous = CUDA.zeros(Int32, N)
+reaction_count = CUDA.zeros(Int32, N)
+pair_count = CUDA.zeros(Int32, num_blocks)
+
+
+# max_neighbors_per_atom = (49152 - cells.num_threads*sizeof(Bool))÷(cells.num_threads*sizeof(Int32)) - 1
+CUDA.@cuda(
+    threads=cells.num_threads,
+    blocks=num_blocks,
+    shmem=(1 + max_neighbors_per_atom)*cells.num_threads*sizeof(Int32),
+    find_action_partners1!(
+        action_partner, action_previous, action_count, pair_count,
+        cells.head, cells.next, cells.index, cells.action_cells,
+        cutoff/L, r/L, max_pairs_per_block, max_neighbors_per_atom
+    )
+)
+max_neighbors_per_atom

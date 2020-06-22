@@ -1,6 +1,7 @@
 using EmDee
 using Test
 using CUDA
+using DelimitedFiles
 
 function test_cells()
     N = 1000
