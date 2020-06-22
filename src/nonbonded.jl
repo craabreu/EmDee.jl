@@ -8,15 +8,6 @@ include("lennard_jones.jl")
 const WARPSIZE = 32
 const Vec3 = StaticArrays.SVector{3,Float32}
 
-function off_diagonal_pairs(n, T=Int32)
-    pairs = Vector{Tuple{T,T}}(undef, n*(n-1)÷2)
-    k = 0
-    for i=1:n-1, j=1:n-i
-        pairs[k+=1] = (j, j+i)
-    end
-    return pairs
-end
-
 function upper_triangular_pairs(n, T=Int32)
     pairs = Vector{Tuple{T,T}}(undef, n*(n+1)÷2)
     k = 0
@@ -27,17 +18,18 @@ function upper_triangular_pairs(n, T=Int32)
 end
 
 function size_adjusted(array::Vector{T}) where {T}
-    num_lacking_elements = WARPSIZE*cld(length(array), WARPSIZE) - length(array)
-    return vcat(array, Vector{T}(undef, num_lacking_elements))
+    lacking = WARPSIZE*cld(length(array), WARPSIZE) - length(array)
+    return vcat(array, Vector{T}(undef, lacking))
 end
 
 function size_adjusted(array::Matrix{T}, transpose=false) where {T}
     rows, cols = transpose ? (2, 1) : (1, 2)
-    num_additions = WARPSIZE*cld(size(array, cols), WARPSIZE) - size(array, cols)
-    return hcat(transpose ? Matrix(array') : array, Matrix{T}(undef, size(array, rows), num_additions))
+    lacking = WARPSIZE*cld(size(array, cols), WARPSIZE) - size(array, cols)
+    return hcat(transpose ? Matrix(array') : array, Matrix{T}(undef, size(array, rows), lacking))
 end
 
 @inline minimum_image(s) = s - round(s)
+@inline to_vec3(vector, start) = Vec3(vector[start+1], vector[start+2], vector[start+3])
 
 function compute_tiles!(forces, energies, virials, positions, L, tiles, model,
                         atoms::CUDA.CuDeviceArray{Atom,1},
@@ -50,14 +42,16 @@ function compute_tiles!(forces, energies, virials, positions, L, tiles, model,
         is_diagonal_tile = block_J == block_I
         I = (block_I - 1)*WARPSIZE + tid
         J = (block_J - 1)*WARPSIZE + tid
+        start_I = 3*(I - 1)
+        start_J = 3*(J - 1)
 
         atoms_shmem = CUDA.@cuStaticSharedMem(Atom, WARPSIZE)
         atom_i = atoms[I]
         atoms_shmem[tid] = atoms[J]
 
         scaled_positions_shmem = CUDA.@cuStaticSharedMem(Vec3, WARPSIZE)
-        scaled_position_i = positions[I]/L
-        scaled_positions_shmem[tid] = positions[J]/L
+        scaled_position_i = to_vec3(positions, start_I)/L
+        scaled_positions_shmem[tid] = to_vec3(positions, start_J)/L
 
         forces_shmem = CUDA.@cuStaticSharedMem(Vec3, WARPSIZE)
         force_i = forces_shmem[tid] = zeros(Vec3)
@@ -91,18 +85,16 @@ function compute_tiles!(forces, energies, virials, positions, L, tiles, model,
             end
         end
 
-        start = 3*(I - 1)
-        for (k, f) in enumerate(force_i)
-            CUDA.atomic_add!(pointer(forces, start + k), f)
-        end
+        CUDA.atomic_add!(pointer(forces, start_I + 1), force_i[1])
+        CUDA.atomic_add!(pointer(forces, start_I + 2), force_i[2])
+        CUDA.atomic_add!(pointer(forces, start_I + 3), force_i[3])
         compute_energies && CUDA.atomic_add!(pointer(energies, I), 0.5f0*energy_i)
         compute_virials && CUDA.atomic_add!(pointer(virials, I), 0.5f0*virial_i)
 
         if !is_diagonal_tile
-            start = 3*(J - 1)
-            for (k, f) in enumerate(forces_shmem[tid])
-                CUDA.atomic_add!(pointer(forces, start + k), f)
-            end
+            CUDA.atomic_add!(pointer(forces, start_J + 1), forces_shmem[tid][1])
+            CUDA.atomic_add!(pointer(forces, start_J + 2), forces_shmem[tid][2])
+            CUDA.atomic_add!(pointer(forces, start_J + 3), forces_shmem[tid][3])
             compute_energies && CUDA.atomic_add!(pointer(energies, J), 0.5f0*energies_shmem[tid])
             compute_virials && CUDA.atomic_add!(pointer(virials, J), 0.5f0*virials_shmem[tid])
         end

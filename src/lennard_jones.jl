@@ -8,7 +8,7 @@ struct LennardJonesModel
     rc²::Float32
     rs²::Float32
     δ⁻²::Float32
-    LennardJonesModel(rc, rs) = new(rc^2, rs^2, 1/(rc^2 - rs^2))
+    LennardJonesModel(cutoff, switch) = new(cutoff^2, switch^2, 1/(cutoff^2 - switch^2))
 end
 
 @inline function interaction(r²::Float32,
