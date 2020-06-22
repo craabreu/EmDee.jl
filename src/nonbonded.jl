@@ -40,64 +40,72 @@ end
 @inline minimum_image(s) = s - round(s)
 
 function compute_tiles!(forces, energies, virials, positions, L, tiles, model,
-                        atoms::CUDA.CuDeviceArray{Atom,1}) where {Atom}
+                        atoms::CUDA.CuDeviceArray{Atom,1},
+                        ::Val{compute_energies}, ::Val{compute_virials}
+                        ) where {Atom, compute_energies, compute_virials}
+    @inbounds begin
+        tid = CUDA.threadIdx().x
+        bid = CUDA.blockIdx().x
+        block_I, block_J = tiles[bid]
+        is_diagonal_tile = block_J == block_I
+        I = (block_I - 1)*WARPSIZE + tid
+        J = (block_J - 1)*WARPSIZE + tid
 
-    tid = CUDA.threadIdx().x
-    bid = CUDA.blockIdx().x
-    block_I, block_J = tiles[bid]
-    is_diagonal_tile = block_J == block_I
-    I = (block_I - 1)*WARPSIZE + tid
-    J = (block_J - 1)*WARPSIZE + tid
+        atoms_shmem = CUDA.@cuStaticSharedMem(Atom, WARPSIZE)
+        atom_i = atoms[I]
+        atoms_shmem[tid] = atoms[J]
 
-    atoms_shmem = CUDA.@cuStaticSharedMem(Atom, WARPSIZE)
-    atom_i = atoms[I]
-    atoms_shmem[tid] = atoms[J]
+        scaled_positions_shmem = CUDA.@cuStaticSharedMem(Vec3, WARPSIZE)
+        scaled_position_i = positions[I]/L
+        scaled_positions_shmem[tid] = positions[J]/L
 
-    scaled_positions_shmem = CUDA.@cuStaticSharedMem(Vec3, WARPSIZE)
-    scaled_position_i = positions[I]/L
-    scaled_positions_shmem[tid] = positions[J]/L
+        forces_shmem = CUDA.@cuStaticSharedMem(Vec3, WARPSIZE)
+        force_i = forces_shmem[tid] = zeros(Vec3)
 
-    forces_shmem = CUDA.@cuStaticSharedMem(Vec3, WARPSIZE)
-    force_i = forces_shmem[tid] = zeros(Vec3)
+        if compute_energies
+            energies_shmem = CUDA.@cuStaticSharedMem(Float32, WARPSIZE)
+            energy_i = energies_shmem[tid] = 0.0f0
+        end
 
-    energies_shmem = CUDA.@cuStaticSharedMem(Float32, WARPSIZE)
-    energy_i = energies_shmem[tid] = 0.0f0
+        if compute_virials
+            virials_shmem = CUDA.@cuStaticSharedMem(Float32, WARPSIZE)
+            virial_i = virials_shmem[tid] = 0.0f0
+        end
 
-    virials_shmem = CUDA.@cuStaticSharedMem(Float32, WARPSIZE)
-    virial_i = virials_shmem[tid] = 0.0f0
+        for k = tid+1:tid+WARPSIZE-Int(is_diagonal_tile)
+            j = (k - 1)%WARPSIZE + 1
+            rᵥ = L*minimum_image.(scaled_positions_shmem[j] - scaled_position_i)
+            r² = rᵥ⋅rᵥ
+            E, r⁻¹E′ = interaction(r², model, atom_i, atoms_shmem[j])
+            pair_force = r⁻¹E′*rᵥ
+            force_i += pair_force
+            forces_shmem[j] -= pair_force
+            if compute_energies
+                energy_i += E
+                energies_shmem[j] += E
+            end
+            if compute_virials
+                W = r⁻¹E′*r²
+                virial_i += W
+                virials_shmem[j] += W
+            end
+        end
 
-    for k = tid+1:tid+WARPSIZE-Int(is_diagonal_tile)
-        j = (k - 1)%WARPSIZE + 1
-        rᵥ = L*minimum_image.(scaled_positions_shmem[j] - scaled_position_i)
-        r² = rᵥ⋅rᵥ
-        E, r⁻¹E′ = interaction(r², model, atom_i, atoms_shmem[j])
-        pair_force = r⁻¹E′*rᵥ
-        force_i += pair_force
-        forces_shmem[j] -= pair_force
-
-        energy_i += E
-        energies_shmem[j] += E
-
-        W = r⁻¹E′*r²
-        virial_i += W
-        virials_shmem[j] += W
-    end
-
-    start = 3*(I - 1)
-    for (k, f) in enumerate(force_i)
-        CUDA.atomic_add!(pointer(forces, start + k), f)
-    end
-    CUDA.atomic_add!(pointer(energies, I), 0.5f0*energy_i)
-    CUDA.atomic_add!(pointer(virials, I), 0.5f0*virial_i)
-
-    if !is_diagonal_tile
-        start = 3*(J - 1)
-        for (k, f) in enumerate(forces_shmem[tid])
+        start = 3*(I - 1)
+        for (k, f) in enumerate(force_i)
             CUDA.atomic_add!(pointer(forces, start + k), f)
         end
-        CUDA.atomic_add!(pointer(energies, J), 0.5f0*energies_shmem[tid])
-        CUDA.atomic_add!(pointer(virials, J), 0.5f0*virials_shmem[tid])
-    end
+        compute_energies && CUDA.atomic_add!(pointer(energies, I), 0.5f0*energy_i)
+        compute_virials && CUDA.atomic_add!(pointer(virials, I), 0.5f0*virial_i)
 
+        if !is_diagonal_tile
+            start = 3*(J - 1)
+            for (k, f) in enumerate(forces_shmem[tid])
+                CUDA.atomic_add!(pointer(forces, start + k), f)
+            end
+            compute_energies && CUDA.atomic_add!(pointer(energies, J), 0.5f0*energies_shmem[tid])
+            compute_virials && CUDA.atomic_add!(pointer(virials, J), 0.5f0*virials_shmem[tid])
+        end
+    end
     return nothing
 end
