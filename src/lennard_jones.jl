@@ -23,7 +23,7 @@ end
     E = ε4*(s⁻¹² - s⁻⁶)
     r⁻¹E′ = -6ε4*(2s⁻¹² - s⁻⁶)/r²
     x = (r² - model.rs²)*model.δ⁻²
-    x *= (sign(x) - sign(x-1))/2
+    x *= 0.5f0(sign(x) - sign(x-1))
     x² = x*x
     g = 1 + x*x²*(15x - 6x² - 10)
     r⁻¹g′ = -60x²*(2x - x² - 1)*model.δ⁻²
