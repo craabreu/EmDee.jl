@@ -16,6 +16,9 @@ function test_cells()
            all(Array(cells_x.population) .== Array(cells_y.population))
 end
 
+function test_nonbonded()
+end
+
 @testset "EmDee.jl" begin
     @test test_cells()
     # Write your tests here.

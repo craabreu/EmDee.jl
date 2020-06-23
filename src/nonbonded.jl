@@ -101,3 +101,40 @@ function compute_tiles!(forces, energies, virials, positions, L, tiles, model,
     end
     return nothing
 end
+
+function compute_nonbonded_interactions!(forces, energies, virials, positions, L,
+                                         tiles, model, atoms::CUDA.CuDeviceArray{Atom,1},
+                                         compute_energies, compute_virials) where {Atom}
+    forces .= 0.0f0
+    compute_energies && (energies .= 0.0f0)
+    compute_virials && (virials .= 0.0f0)
+    bytes_per_thread = sizeof(Atom) + sizeof(Float32)*(6+Int(compute_energies)+Int(compute_virials))
+    CUDA.@cuda(
+        threads=WARPSIZE,
+        blocks=length(tiles),
+        shmem=WARPSIZE*bytes_per_thread,
+        compute_tiles!(forces, energies, virials, positions, L, tiles, model, atoms,
+                       Val(compute_energies), Val(compute_virials))
+    )
+end
+
+function naively_compute_nonbonded_interaction!(positions, L, model, atoms)
+    N = size(positions, 2)
+    scaled_positions = map(x->x/L, positions)
+    forces = zeros(3, N)
+    energy = 0.0
+    virial = 0.0
+    for i = 1:N-1
+        for j = i+1:N
+            rᵥ = L*minimum_image.(scaled_positions[:,j] - scaled_positions[:,i])
+            r² = rᵥ⋅rᵥ
+            E, r⁻¹E′ = interaction(r², model, atoms[i], atoms[j])
+            pair_force = r⁻¹E′*rᵥ
+            forces[:,i] += pair_force
+            forces[:,j] -= pair_force
+            energy += E
+            virial += r⁻¹E′*r²
+        end
+    end
+    return energy, virial, forces
+end
