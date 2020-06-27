@@ -1,9 +1,14 @@
+export FORCES, ENERGIES, VIRIALS
 export nonbonded_computation_tiles, compute_nonbonded!, naively_compute_nonbonded!
 
 import CUDA
 using StaticArrays
 
 CUDA.allowscalar(false)
+
+const FORCES = 1 << 0
+const ENERGIES = 1 << 1
+const VIRIALS = 1 << 2
 
 const WARPSIZE = 32
 const Vec3 = StaticArrays.SVector{3,Float32}
@@ -37,9 +42,8 @@ end
 @inline ⋅(x, y) = sum(x.*y)
 
 function compute_tile!(forces, energies, virials, positions, L, tiles, model,
-                       atoms::CUDA.CuDeviceArray{Atom,1},
-                       ::Val{include_forces}, ::Val{include_energies}, ::Val{include_virials}
-                       ) where {Atom, include_forces, include_energies, include_virials}
+                       atoms::CUDA.CuDeviceArray{Atom,1}, ::Val{bitmask}
+                       ) where {Atom, bitmask}
     @inbounds begin
         tid = CUDA.threadIdx().x
         bid = CUDA.blockIdx().x
@@ -58,15 +62,15 @@ function compute_tile!(forces, energies, virials, positions, L, tiles, model,
         scaled_position_i = to_vec3(positions, offset_I)/L
         scaled_positions_shmem[tid] = to_vec3(positions, offset_J)/L
 
-        if include_forces
+        if FORCES & bitmask ≠ 0
             forces_shmem = CUDA.@cuStaticSharedMem(Vec3, WARPSIZE)
             force_i = forces_shmem[tid] = zeros(Vec3)
         end
-        if include_energies
+        if ENERGIES & bitmask ≠ 0
             energies_shmem = CUDA.@cuStaticSharedMem(Float32, WARPSIZE)
             energy_i = energies_shmem[tid] = 0.0f0
         end
-        if include_virials
+        if VIRIALS & bitmask ≠ 0
             virials_shmem = CUDA.@cuStaticSharedMem(Float32, WARPSIZE)
             virial_i = virials_shmem[tid] = 0.0f0
         end
@@ -76,37 +80,37 @@ function compute_tile!(forces, energies, virials, positions, L, tiles, model,
             rᵥ = L*minimum_image.(scaled_position_i - scaled_positions_shmem[j])
             r² = rᵥ⋅rᵥ
             E, minus_rE′ = interaction(r², model, atom_i, atoms_shmem[j])
-            if include_forces
+            if FORCES & bitmask ≠ 0
                 force_ij = minus_rE′/r²*rᵥ
                 force_i += force_ij
                 forces_shmem[j] -= force_ij
             end
-            if include_energies
+            if ENERGIES & bitmask ≠ 0
                 energy_i += E
                 energies_shmem[j] += E
             end
-            if include_virials
+            if VIRIALS & bitmask ≠ 0
                 virial_i += minus_rE′
                 virials_shmem[j] += minus_rE′
             end
         end
 
-        if include_forces
+        if FORCES & bitmask ≠ 0
             CUDA.atomic_add!(pointer(forces, offset_I + 1), force_i[1])
             CUDA.atomic_add!(pointer(forces, offset_I + 2), force_i[2])
             CUDA.atomic_add!(pointer(forces, offset_I + 3), force_i[3])
         end
-        include_energies && CUDA.atomic_add!(pointer(energies, I), 0.5f0*energy_i)
-        include_virials && CUDA.atomic_add!(pointer(virials, I), 0.5f0*virial_i)
+        ENERGIES & bitmask ≠ 0 && CUDA.atomic_add!(pointer(energies, I), 0.5f0*energy_i)
+        VIRIALS & bitmask ≠ 0 && CUDA.atomic_add!(pointer(virials, I), 0.5f0*virial_i)
 
         if !is_diagonal_tile
-            if include_forces
+            if FORCES & bitmask ≠ 0
                 CUDA.atomic_add!(pointer(forces, offset_J + 1), forces_shmem[tid][1])
                 CUDA.atomic_add!(pointer(forces, offset_J + 2), forces_shmem[tid][2])
                 CUDA.atomic_add!(pointer(forces, offset_J + 3), forces_shmem[tid][3])
             end
-            include_energies && CUDA.atomic_add!(pointer(energies, J), 0.5f0*energies_shmem[tid])
-            include_virials && CUDA.atomic_add!(pointer(virials, J), 0.5f0*virials_shmem[tid])
+            ENERGIES & bitmask ≠ 0 && CUDA.atomic_add!(pointer(energies, J), 0.5f0*energies_shmem[tid])
+            VIRIALS & bitmask ≠ 0 && CUDA.atomic_add!(pointer(virials, J), 0.5f0*virials_shmem[tid])
         end
     end
     return nothing
@@ -114,18 +118,16 @@ end
 
 function compute_nonbonded!(forces, energies, virials, positions, L,
                             tiles, model, atoms::CUDA.CuArray{Atom,1},
-                            include_forces, include_energies, include_virials) where {Atom}
-    include_forces && forces .= 0.0f0
-    include_energies && (energies .= 0.0f0)
-    include_virials && (virials .= 0.0f0)
-    bytes_per_thread = sizeof(Atom) + sizeof(Float32)*
-                       (3 + 3*Int(include_forces) + Int(include_energies) + Int(include_virials))
+                            ::Val{bitmask}) where {Atom, bitmask}
+    FORCES & bitmask ≠ 0 && (forces .= 0.0f0)
+    ENERGIES & bitmask ≠ 0 && (energies .= 0.0f0)
+    VIRIALS & bitmask ≠ 0 && (virials .= 0.0f0)
+    bytes_per_thread = sizeof(Atom) + sizeof(Float32)*(3 + 3*count_ones(bitmask))
     CUDA.@cuda(
         threads=WARPSIZE,
         blocks=length(tiles),
         shmem=WARPSIZE*bytes_per_thread,
-        compute_tile!(forces, energies, virials, positions, L, tiles, model, atoms,
-                      Val(include_forces), Val(include_energies), Val(include_virials))
+        compute_tile!(forces, energies, virials, positions, L, tiles, model, atoms, Val(bitmask))
     )
 end
 

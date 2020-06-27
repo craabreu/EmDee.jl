@@ -38,7 +38,7 @@ function test_compute_nonbonded(xyz_file, L, cutoff, switch)
     virials = CUDA.zeros(N)
 
     compute_nonbonded!(forces, energies, virials, positions, L,
-                       tiles, model, atoms, true, true, true)
+                       tiles, model, atoms, Val(FORCES | ENERGIES | VIRIALS))
 
     return maximum(forces .- forces_ref) < 1.0f-4 &&
            maximum(energies .- energies_ref) < 1.0f-4 &&

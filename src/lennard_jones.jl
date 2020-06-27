@@ -24,12 +24,11 @@ end
     ε4s⁻⁶ = atom_i.twice_sqrt_ε*atom_j.twice_sqrt_ε*s⁻⁶
     E = ε4s⁻⁶*(s⁻⁶ - 1)
     minus_E′r = 6ε4s⁻⁶*(2s⁻⁶ - 1)
-    theta = 0.5f0(1 + sign(model.rc² - r²))
-    return theta*E, theta*minus_E′r
-    # x = (r² - model.rs²)*model.δ⁻²
-    # x *= 0.5f0(sign(x) - sign(x-1))
-    # x² = x*x
-    # g = 1 + x*x²*(15x - 6x² - 10)
-    # minus_g′r = 60x²*(1 - 2x + x²)*model.δ⁻²*r²
-    # return E*g, minus_E′r*g + E*minus_g′r
+    x = (r² - model.rs²)*model.δ⁻²
+    x *= 0.5f0(sign(x) - sign(x-1))
+    x² = x*x
+    g = 1 + x*x²*(15x - 6x² - 10)
+    minus_g′r = 60x²*(1 - 2x + x²)*model.δ⁻²*r²
+    return E*g, minus_E′r*g + E*minus_g′r
 end
+
