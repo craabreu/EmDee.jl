@@ -1,6 +1,8 @@
 export FORCES, ENERGIES, VIRIALS
 export nonbonded_computation_tiles, compute_nonbonded!, naively_compute_nonbonded!
 
+# TODO: Use SHUFFLE instead of shared memory
+
 import CUDA
 using StaticArrays
 
@@ -41,6 +43,12 @@ end
 
 @inline ⋅(x, y) = sum(x.*y)
 
+@inline shfl(val::Vec3, src) = Vec3(
+    CUDA.shfl_sync(CUDA.FULL_MASK, val[1], src),
+    CUDA.shfl_sync(CUDA.FULL_MASK, val[2], src),
+    CUDA.shfl_sync(CUDA.FULL_MASK, val[3], src),
+)
+
 function compute_tile!(forces, energies, virials, positions, L, tiles, model,
                        atoms::CUDA.CuDeviceArray{Atom,1}, ::Val{bitmask}
                        ) where {Atom, bitmask}
@@ -58,9 +66,8 @@ function compute_tile!(forces, energies, virials, positions, L, tiles, model,
         atom_i = atoms[I]
         atoms_shmem[tid] = atoms[J]
 
-        scaled_positions_shmem = CUDA.@cuStaticSharedMem(Vec3, WARPSIZE)
         scaled_position_i = to_vec3(positions, offset_I)/L
-        scaled_positions_shmem[tid] = to_vec3(positions, offset_J)/L
+        scaled_position_j = to_vec3(positions, offset_J)/L
 
         if FORCES & bitmask ≠ 0
             forces_shmem = CUDA.@cuStaticSharedMem(Vec3, WARPSIZE)
@@ -77,7 +84,7 @@ function compute_tile!(forces, energies, virials, positions, L, tiles, model,
 
         for k = tid+1:tid+WARPSIZE-Int(is_diagonal_tile)
             j = (k - 1)%WARPSIZE + 1
-            rᵥ = L*minimum_image.(scaled_position_i - scaled_positions_shmem[j])
+            rᵥ = L*minimum_image.(scaled_position_i - shfl(scaled_position_j, j))
             r² = rᵥ⋅rᵥ
             E, minus_rE′ = interaction(r², model, atom_i, atoms_shmem[j])
             if FORCES & bitmask ≠ 0
@@ -122,7 +129,7 @@ function compute_nonbonded!(forces, energies, virials, positions, L,
     FORCES & bitmask ≠ 0 && (forces .= 0.0f0)
     ENERGIES & bitmask ≠ 0 && (energies .= 0.0f0)
     VIRIALS & bitmask ≠ 0 && (virials .= 0.0f0)
-    bytes_per_thread = sizeof(Atom) + sizeof(Float32)*(3 + 3*count_ones(bitmask))
+    bytes_per_thread = sizeof(Atom) + sizeof(Float32)*(3*count_ones(bitmask))
     CUDA.@cuda(
         threads=WARPSIZE,
         blocks=length(tiles),
