@@ -1,10 +1,6 @@
-export LennardJonesAtom, LennardJonesModel
+export LennardJonesModel, LennardJonesAtom
 
-struct LennardJonesAtom
-    half_σ::Float32
-    twice_sqrt_ε::Float32
-    LennardJonesAtom(ε, σ) = new(0.5σ, 2*sqrt(ε))
-end
+import StaticArrays
 
 struct LennardJonesModel
     rc²::Float32
@@ -13,10 +9,17 @@ struct LennardJonesModel
     LennardJonesModel(cutoff, switch) = new(cutoff^2, switch^2, 1/(cutoff^2 - switch^2))
 end
 
+LennardJonesAtom(ε, σ) = LJAtom(0.5σ, 2*sqrt(ε))
+
+struct LJAtom <: StaticArrays.FieldVector{2, Float32}
+    half_σ::Float32
+    twice_sqrt_ε::Float32
+end
+
 @inline function interaction(r²::Float32,
                              model::LennardJonesModel,
-                             atom_i::LennardJonesAtom,
-                             atom_j::LennardJonesAtom)::Tuple{Float32,Float32}
+                             atom_i::LJAtom,
+                             atom_j::LJAtom)::Tuple{Float32,Float32}
     σ = atom_i.half_σ + atom_j.half_σ
     ε4 = atom_i.twice_sqrt_ε*atom_j.twice_sqrt_ε
     s⁻² = σ*σ/r²
@@ -31,4 +34,3 @@ end
     minus_g′r = 60x²*(1 - 2x + x²)*model.δ⁻²*r²
     return E*g, minus_E′r*g + E*minus_g′r
 end
-
