@@ -2,7 +2,6 @@ export FORCES, ENERGIES, VIRIALS
 export nonbonded_computation_tiles, compute_nonbonded!, naively_compute_nonbonded!
 
 import CUDA
-import StaticArrays
 
 CUDA.allowscalar(false)
 
@@ -11,12 +10,6 @@ const ENERGIES = 1 << 1
 const VIRIALS = 1 << 2
 
 const WARPSIZE = 32
-
-struct Vec3 <: StaticArrays.FieldVector{3, Float32}
-    x::Float32
-    y::Float32
-    z::Float32
-end
 
 function nonbonded_computation_tiles(N)
     n = Int32(cld(N, WARPSIZE))
@@ -42,20 +35,7 @@ end
 
 @inline minimum_image(s) = s - round(s)
 
-@inline to_vec3(vector, offset) = Vec3(vector[offset+1], vector[offset+2], vector[offset+3])
-
 @inline ⋅(x, y) = sum(x.*y)
-
-@inline shfl_sync(mask, val::T, src) where {T<:StaticArrays.FieldVector{2, Float32}} = T(
-    CUDA.shfl_sync(mask, val[1], src),
-    CUDA.shfl_sync(mask, val[2], src)
-)
-
-@inline shfl_sync(mask, val::T, src) where {T<:StaticArrays.FieldVector{3, Float32}} = T(
-    CUDA.shfl_sync(mask, val[1], src),
-    CUDA.shfl_sync(mask, val[2], src),
-    CUDA.shfl_sync(mask, val[3], src)
-)
 
 function compute_tile!(forces, energies, virials, positions, L, tiles, model,
                        atoms::CUDA.CuDeviceArray{Atom,1}, ::Val{bitmask}
@@ -67,14 +47,14 @@ function compute_tile!(forces, energies, virials, positions, L, tiles, model,
         is_diagonal_tile = block_J == block_I
         I = (block_I - 1)*WARPSIZE + tid
         J = (block_J - 1)*WARPSIZE + tid
-        offset_I = 3*(I - 1)
-        offset_J = 3*(J - 1)
+        Ix3 = 3I
+        Jx3 = 3J
 
         atom_i = atoms[I]
         atom_j = atoms[J]
 
-        scaled_pos_i = to_vec3(positions, offset_I)/L
-        scaled_pos_j = to_vec3(positions, offset_J)/L
+        scaled_pos_i = Vec3(positions[Ix3-2], positions[Ix3-1], positions[Ix3])/L
+        scaled_pos_j = Vec3(positions[Jx3-2], positions[Jx3-1], positions[Jx3])/L
 
         FORCES & bitmask ≠ 0 && (force_i = force_j = zeros(Vec3))
         ENERGIES & bitmask ≠ 0 && (energy_i = energy_j = 0.0f0)
@@ -102,18 +82,18 @@ function compute_tile!(forces, energies, virials, positions, L, tiles, model,
         end
 
         if FORCES & bitmask ≠ 0
-            CUDA.atomic_add!(pointer(forces, offset_I + 1), force_i.x)
-            CUDA.atomic_add!(pointer(forces, offset_I + 2), force_i.y)
-            CUDA.atomic_add!(pointer(forces, offset_I + 3), force_i.z)
+            CUDA.atomic_add!(pointer(forces, Ix3-2), force_i.x)
+            CUDA.atomic_add!(pointer(forces, Ix3-1), force_i.y)
+            CUDA.atomic_add!(pointer(forces, Ix3), force_i.z)
         end
         ENERGIES & bitmask ≠ 0 && CUDA.atomic_add!(pointer(energies, I), 0.5f0*energy_i)
         VIRIALS & bitmask ≠ 0 && CUDA.atomic_add!(pointer(virials, I), 0.5f0*virial_i)
 
         if !is_diagonal_tile
             if FORCES & bitmask ≠ 0
-                CUDA.atomic_add!(pointer(forces, offset_J + 1), force_j.x)
-                CUDA.atomic_add!(pointer(forces, offset_J + 2), force_j.y)
-                CUDA.atomic_add!(pointer(forces, offset_J + 3), force_j.z)
+                CUDA.atomic_add!(pointer(forces, Jx3-2), force_j.x)
+                CUDA.atomic_add!(pointer(forces, Jx3-1), force_j.y)
+                CUDA.atomic_add!(pointer(forces, Jx3), force_j.z)
             end
             ENERGIES & bitmask ≠ 0 && CUDA.atomic_add!(pointer(energies, J), 0.5f0*energy_j)
             VIRIALS & bitmask ≠ 0 && CUDA.atomic_add!(pointer(virials, J), 0.5f0*virial_j)

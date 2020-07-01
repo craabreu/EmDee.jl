@@ -1,6 +1,6 @@
 export LennardJonesModel, LennardJonesAtom
 
-import StaticArrays
+import CUDA
 
 struct LennardJonesModel
     rc²::Float32
@@ -11,10 +11,15 @@ end
 
 LennardJonesAtom(ε, σ) = LJAtom(0.5σ, 2*sqrt(ε))
 
-struct LJAtom <: StaticArrays.FieldVector{2, Float32}
+struct LJAtom
     half_σ::Float32
     twice_sqrt_ε::Float32
 end
+
+@inline shfl_sync(mask, val::LJAtom, src) = LJAtom(
+    CUDA.shfl_sync(mask, val.half_σ, src),
+    CUDA.shfl_sync(mask, val.twice_sqrt_ε, src)
+)
 
 @inline function interaction(r²::Float32,
                              model::LennardJonesModel,
