@@ -32,6 +32,18 @@ git-tree-sha1 = "3d247bd2260259f86853e52584169ddeca648ebc"
 uuid = "052768ef-5323-5732-b1bb-66c8b64840ba"
 version = "0.1.0"
 
+[[Chemfiles]]
+deps = ["BinaryProvider", "Chemfiles_jll", "Libdl"]
+git-tree-sha1 = "beaea20434327a0a605a0ae08c091a715af3e0c4"
+uuid = "46823bd8-5fb3-5f92-9aa0-96921f3dd015"
+version = "0.9.3"
+
+[[Chemfiles_jll]]
+deps = ["Libdl", "Pkg"]
+git-tree-sha1 = "671b0273cc2c1e172df05f3489b778b815062397"
+uuid = "78a364fa-1a3c-552a-b4bb-8fa0f9c1fcca"
+version = "0.9.3+1"
+
 [[DataStructures]]
 deps = ["InteractiveUtils", "OrderedCollections"]
 git-tree-sha1 = "be680f1ad03c0a03796aa3fda5a2180df7f83b46"

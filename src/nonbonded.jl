@@ -1,5 +1,9 @@
-export FORCES, ENERGIES, VIRIALS
-export nonbonded_computation_tiles, compute_nonbonded!, naively_compute_nonbonded!
+export FORCES,
+       ENERGIES,
+       VIRIALS,
+       nonbonded_computation_tiles,
+       compute_nonbonded!,
+       naively_compute_nonbonded!
 
 import CUDA
 

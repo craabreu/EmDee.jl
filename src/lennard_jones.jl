@@ -1,4 +1,5 @@
-export LennardJonesModel, LennardJonesAtom
+export LennardJonesModel,
+       LennardJonesAtom
 
 import CUDA
 
