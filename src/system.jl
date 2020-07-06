@@ -1,6 +1,11 @@
 import LightXML
 import Chemfiles
 
+struct System
+    frame::Chemfiles.Frame
+    adjacency::Vector{BitArray{2}}
+end
+
 if isdefined(Chemfiles, :atoms)
     Chemfiles_atoms(residue::Chemfiles.Residue) = Chemfiles.atoms(residue)
 else
@@ -11,8 +16,6 @@ else
         return result
     end
 end
-
-include("canonical.jl")
 
 function canonical_mapping(residues, atoms, bonds)
     num_atoms = length(atoms)
@@ -37,8 +40,7 @@ function canonical_mapping(residues, atoms, bonds)
         residue_atoms[index] .= residue_atoms[index][canonical_order]
         residue_adjacency[index] .= canonical_adjacency
     end
-    mapping = Vector{Int}(undef, num_atoms)
-    mapping[vcat(residue_atoms...)] .= collect(0:num_atoms-1)
+    mapping = invperm(vcat(residue_atoms...)) .- 1
     return residue_atoms, residue_adjacency, mapping
 end
 
@@ -62,22 +64,24 @@ function System(file)
 
     residue_atoms, residue_adjacency, mapping = canonical_mapping(residues, atoms, bonds)
 
-    system = Chemfiles.Frame()
-    Chemfiles.set_cell!(system, unit_cell)
-    has_velocities && Chemfiles.add_velocities!(system)
+    new_frame = Chemfiles.Frame()
+    Chemfiles.set_cell!(new_frame, unit_cell)
+    has_velocities && Chemfiles.add_velocities!(new_frame)
 
     for (index, residue) in enumerate(residues)
         new_residue = Chemfiles.Residue(Chemfiles.name(residue), index)
         for i in residue_atoms[index]
-            Chemfiles.add_atom!(system, atoms[i], positions[:, i], velocities[:, i])
+            Chemfiles.add_atom!(new_frame, atoms[i], positions[:, i], velocities[:, i])
             Chemfiles.add_atom!(new_residue, mapping[i])
         end
-        Chemfiles.add_residue!(system, new_residue)
+        Chemfiles.add_residue!(new_frame, new_residue)
     end
+
     bonds = map(x->mapping[x], bonds)
     bond_orders = Chemfiles.bond_orders(topology)
     for (bond, order) in zip(eachcol(bonds), bond_orders)
-        Chemfiles.add_bond!(system, bond[1], bond[2], order)
+        Chemfiles.add_bond!(new_frame, bond..., order)
     end
-    return system
+
+    return System(new_frame, residue_adjacency)
 end

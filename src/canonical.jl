@@ -1,7 +1,7 @@
 using nauty_jll
 using Parameters
 
-const LIB_FILE = libnautyW1
+const LIB_FILE = libnautyL0
 const WORDSIZE = 64
 
 @with_kw mutable struct OptionBlk
@@ -71,7 +71,7 @@ function canonical_form(matrix)
         (:densenauty, LIB_FILE),
         Cvoid,
         (Ptr{UInt64}, Ptr{Cint}, Ptr{Cint}, Ptr{Cint}, Ref{OptionBlk}, Ref{StatsBlk}, Cint, Cint, Ptr{UInt64}),
-         g.chunks, lab, ptn, orbits, OPTION_BLK, STATS_BLK, m, n, cg.chunks
+        g.chunks, lab, ptn, orbits, OPTION_BLK, STATS_BLK, m, n, cg.chunks
     )
-    return lab .+ 1, graph2matrix(cg)
+    return reverse(lab .+ 1), graph2matrix(cg)[n:-1:1, n:-1:1]
 end
