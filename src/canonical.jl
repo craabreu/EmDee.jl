@@ -44,8 +44,6 @@ end
     invarsuclevel::Cint=0
 end
 
-const STATS_BLK = StatsBlk()
-
 function matrix2graph(matrix)
     n = size(matrix, 1)
     nw = WORDSIZE*cld(n, WORDSIZE)
@@ -72,7 +70,7 @@ function canonical_form(matrix)
         (:densenauty, LIB_FILE),
         Cvoid,
         (Ptr{UInt64}, Ptr{Cint}, Ptr{Cint}, Ptr{Cint}, Ref{OptionBlk}, Ref{StatsBlk}, Cint, Cint, Ptr{UInt64}),
-        g.chunks, lab, ptn, orbits, option_block, STATS_BLK, m, n, cg.chunks
+        g.chunks, lab, ptn, orbits, option_block, StatsBlk(), m, n, cg.chunks
     )
     return reverse(lab .+ 1), graph2matrix(cg)[n:-1:1, n:-1:1]
 end

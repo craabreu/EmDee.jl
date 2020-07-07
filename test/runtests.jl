@@ -2,6 +2,7 @@ using EmDee
 using Test
 using CUDA
 using DelimitedFiles
+import Chemfiles
 
 # function test_cells()
 #     N = 1000
@@ -47,7 +48,8 @@ end
 
 function test_system(pdb_file)
     system = System(pdb_file)
-    return length(system.frame) == 1519
+    topology = Chemfiles.Topology(system.frame)
+    return length(system.frame) == 1519 && Chemfiles.count_residues(topology) == 500
 end
 
 @testset "EmDee.jl" begin
