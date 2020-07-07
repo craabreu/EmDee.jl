@@ -1,3 +1,5 @@
+export ForceField
+
 import LightXML
 import Chemfiles
 using DataFrames
@@ -28,6 +30,16 @@ function dataframe(category, element_list, key)
         end
     end
     return df
+end
+
+struct ForceField
+    atom_types::DataFrame
+    bond_types::DataFrame
+    angle_types::DataFrame
+    dihedral_types::DataFrame
+    improper_types::DataFrame
+    frame::Chemfiles.Frame
+    adjacency::Vector{BitArray{2}}
 end
 
 function ForceField(xml_file)
@@ -93,6 +105,7 @@ function ForceField(xml_file)
     for (atom_1, atom_2) in eachcol(bonds)
         Chemfiles.add_bond!(frame, mapping[atom_1], mapping[atom_2])
     end
-    return ForceField(atom_types, bond_types, angle_types, dihedral_types, improper_types,
+    return ForceField(atom_types, bond_types, angle_types,
+                      dihedral_types, improper_types,
                       frame, adjacency)
 end

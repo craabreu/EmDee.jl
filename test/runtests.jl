@@ -46,7 +46,8 @@ function test_compute_nonbonded(xyz_file, L, cutoff, switch)
            maximum(virials .- virials_ref) < 1.0f-4
 end
 
-function test_system(pdb_file)
+function test_system(pdb_file, xml_file)
+    force_field = ForceField(xml_file)
     system = System(pdb_file)
     topology = Chemfiles.Topology(system.frame)
     return length(system.frame) == 1519 && Chemfiles.count_residues(topology) == 500
@@ -55,5 +56,5 @@ end
 @testset "EmDee.jl" begin
     # @test test_cells()
     @test test_compute_nonbonded(joinpath(@__DIR__, "data", "lj_sample.xyz"), 10, 3, 2.5)
-    @test test_system(joinpath(@__DIR__, "data", "dibenzo-p-dioxin-in-water.pdb"))
+    @test test_system(joinpath(@__DIR__, "data", "dibenzo-p-dioxin-in-water.").*["pdb", "xml"]...)
 end
