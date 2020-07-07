@@ -45,8 +45,13 @@ function test_compute_nonbonded(xyz_file, L, cutoff, switch)
            maximum(virials .- virials_ref) < 1.0f-4
 end
 
+function test_system(pdb_file)
+    system = System(pdb_file)
+    return length(system.frame) == 1519
+end
+
 @testset "EmDee.jl" begin
     # @test test_cells()
-    @test test_compute_nonbonded(joinpath(@__DIR__, "lj_sample.xyz"), 10, 3, 2.5)
-    # Write your tests here.
+    @test test_compute_nonbonded(joinpath(@__DIR__, "data", "lj_sample.xyz"), 10, 3, 2.5)
+    @test test_system(joinpath(@__DIR__, "data", "dibenzo-p-dioxin-in-water.pdb"))
 end

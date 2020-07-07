@@ -1,4 +1,5 @@
-import LightXML
+export System
+
 import Chemfiles
 
 struct System
@@ -26,22 +27,22 @@ function canonical_mapping(residues, atoms, bonds)
         atom_residue[atom_indices] .= index
         internal_map[atom_indices] .= collect(1:length(atom_indices))
     end
-    residue_adjacency = map(n->falses(n, n), map(length, residue_atoms))
+    adjacency = map(n->falses(n, n), map(length, residue_atoms))
     for (atom_1, atom_2) in eachcol(bonds)
         index = atom_residue[atom_1]
         if atom_residue[atom_2] == index
             i = internal_map[atom_1]
             j = internal_map[atom_2]
-            residue_adjacency[index][i, j] = residue_adjacency[index][j, i] = true
+            adjacency[index][i, j] = adjacency[index][j, i] = true
         end
     end
     for index = 1:length(residues)
-        canonical_order, canonical_adjacency = canonical_form(residue_adjacency[index])
+        canonical_order, canonical_adjacency = canonical_form(adjacency[index])
         residue_atoms[index] .= residue_atoms[index][canonical_order]
-        residue_adjacency[index] .= canonical_adjacency
+        adjacency[index] .= canonical_adjacency
     end
     mapping = invperm(vcat(residue_atoms...)) .- 1
-    return residue_atoms, residue_adjacency, mapping
+    return residue_atoms, adjacency, mapping
 end
 
 function System(file)
@@ -61,8 +62,9 @@ function System(file)
     residues = [Chemfiles.Residue(topology, index) for index = 0:num_residues-1]
     atoms = [Chemfiles.Atom(topology, index) for index = 0:num_atoms-1]
     bonds = Chemfiles.bonds(topology) .+ 1
+    residue_atoms = map((x->x.+1) ∘ Chemfiles_atoms, residues)
 
-    residue_atoms, residue_adjacency, mapping = canonical_mapping(residues, atoms, bonds)
+    adjacency, mapping = canonical_mapping!(residue_atoms, bonds)
 
     new_frame = Chemfiles.Frame()
     Chemfiles.set_cell!(new_frame, unit_cell)
@@ -77,11 +79,10 @@ function System(file)
         Chemfiles.add_residue!(new_frame, new_residue)
     end
 
-    bonds = map(x->mapping[x], bonds)
     bond_orders = Chemfiles.bond_orders(topology)
-    for (bond, order) in zip(eachcol(bonds), bond_orders)
-        Chemfiles.add_bond!(new_frame, bond..., order)
+    for ((atom_1, atom_2), order) in zip(eachcol(bonds), bond_orders)
+        Chemfiles.add_bond!(new_frame, mapping[atom_1], mapping[atom_2], order)
     end
 
-    return System(new_frame, residue_adjacency)
+    return System(new_frame, adjacency)
 end
