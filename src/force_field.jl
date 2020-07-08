@@ -4,6 +4,17 @@ import LightXML
 import Chemfiles
 using DataFrames
 
+if isdefined(Chemfiles, :atoms)
+    Chemfiles_atoms(residue::Chemfiles.Residue) = Chemfiles.atoms(residue)
+else
+    function Chemfiles_atoms(residue::Chemfiles.Residue)
+        count = size(residue)
+        result = Array{UInt64}(undef, count)
+        Chemfiles.__check(Chemfiles.lib.chfl_residue_atoms(Chemfiles.__const_ptr(residue), pointer(result), count))
+        return result
+    end
+end
+
 const ATOM_TYPE = Dict(:name=>String, :class=>String, :element=>String, :mass=>Float64)
 
 const HARMONIC_BOND = Dict(:type1=>String, :type2=>String, :length=>Float64, :k=>Float64)
@@ -108,4 +119,27 @@ function ForceField(xml_file)
     return ForceField(atom_types, bond_types, angle_types,
                       dihedral_types, improper_types,
                       frame, adjacency)
+end
+
+function apply_force_field!(atom_list, adjacency, force_field)
+    for (residue_index, matrix) in enumerate(force_field.adjacency)
+        if matrix == adjacency
+            topology = Chemfiles.Topology(force_field.frame)
+            residue = Chemfiles.Residue(topology, residue_index-1)
+            residue_atoms = Chemfiles_atoms(residue)
+            for (index, atom_index) in enumerate(residue_atoms)
+                atom = atom_list[index]
+                template = Chemfiles.Atom(topology, atom_index)
+                isapprox(Chemfiles.mass(atom), Chemfiles.mass(template), atol=0.1) || return false
+                Chemfiles.set_mass!(atom, Chemfiles.mass(template))
+                Chemfiles.set_charge!(atom, Chemfiles.charge(template))
+                Chemfiles.set_type!(atom, Chemfiles.type(template))
+                for property in Chemfiles.list_properties(template)
+                    Chemfiles.set_property!(atom, property, Chemfiles.property(template, property))
+                end
+            end
+            return true
+        end
+    end
+    return false
 end

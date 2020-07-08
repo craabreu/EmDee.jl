@@ -7,45 +7,7 @@ struct System
     adjacency::Vector{BitArray{2}}
 end
 
-if isdefined(Chemfiles, :atoms)
-    Chemfiles_atoms(residue::Chemfiles.Residue) = Chemfiles.atoms(residue)
-else
-    function Chemfiles_atoms(residue::Chemfiles.Residue)
-        count = size(residue)
-        result = Array{UInt64}(undef, count)
-        Chemfiles.__check(Chemfiles.lib.chfl_residue_atoms(Chemfiles.__const_ptr(residue), pointer(result), count))
-        return result
-    end
-end
-
-function canonical_mapping(residues, atoms, bonds)
-    num_atoms = length(atoms)
-    residue_atoms = map((x->x.+1) ∘ Chemfiles_atoms, residues)
-    atom_residue = Vector{UInt128}(undef, num_atoms)
-    internal_map = Vector{UInt128}(undef, num_atoms)
-    for (index, atom_indices) in enumerate(residue_atoms)
-        atom_residue[atom_indices] .= index
-        internal_map[atom_indices] .= collect(1:length(atom_indices))
-    end
-    adjacency = map(n->falses(n, n), map(length, residue_atoms))
-    for (atom_1, atom_2) in eachcol(bonds)
-        index = atom_residue[atom_1]
-        if atom_residue[atom_2] == index
-            i = internal_map[atom_1]
-            j = internal_map[atom_2]
-            adjacency[index][i, j] = adjacency[index][j, i] = true
-        end
-    end
-    for index = 1:length(residues)
-        canonical_order, canonical_adjacency = canonical_form(adjacency[index])
-        residue_atoms[index] .= residue_atoms[index][canonical_order]
-        adjacency[index] .= canonical_adjacency
-    end
-    mapping = invperm(vcat(residue_atoms...)) .- 1
-    return residue_atoms, adjacency, mapping
-end
-
-function System(file)
+function System(file, force_field)
     trajectory = Chemfiles.Trajectory(file)
     frame = read(trajectory)
     unit_cell = Chemfiles.UnitCell(frame)
@@ -71,6 +33,8 @@ function System(file)
     has_velocities && Chemfiles.add_velocities!(new_frame)
 
     for (index, residue) in enumerate(residues)
+        matched = apply_force_field!(atoms[residue_atoms[index]], adjacency[index], force_field)
+        matched || error("Incompatible force field")
         new_residue = Chemfiles.Residue(Chemfiles.name(residue), index)
         for i in residue_atoms[index]
             Chemfiles.add_atom!(new_frame, atoms[i], positions[:, i], velocities[:, i])
