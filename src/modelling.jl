@@ -29,17 +29,22 @@ end
 
 const ATOM_TYPE = Dict(:name=>String, :class=>String, :element=>String, :mass=>Float64)
 
-const HARMONIC_BOND = Dict(:type1=>String, :type2=>String, :length=>Float64, :k=>Float64)
+const HARMONIC_BOND = Dict(:type1=>String, :type2=>String,
+                           :class1=>String, :class2=>String,
+                           :length=>Float64, :k=>Float64)
 
 const HARMONIC_ANGLE = Dict(:type1=>String, :type2=>String, :type3=>String,
+                            :class1=>String, :class2=>String, :class3=>String,
                             :angle=>Float64, :k=>Float64)
 
 const PERIODIC_TORSION = Dict(:type1=>String, :type2=>String, :type3=>String, :type4=>String,
+                              :class1=>String, :class2=>String, :class3=>String, :class4=>String,
                               :periodicity1=>Int, :phase1=>Float64, :k1=>Float64,
                               :periodicity2=>Int, :phase2=>Float64, :k2=>Float64,
-                              :periodicity3=>Int, :phase3=>Float64, :k3=>Float64)
+                              :periodicity3=>Int, :phase3=>Float64, :k3=>Float64,
+                              :periodicity4=>Int, :phase4=>Float64, :k4=>Float64)
 
-const NONBONDED = Dict(:type=>String, :sigma=>Float64, :epsilon=>Float64)
+const NONBONDED = Dict(:type=>String, :charge=>Float64, :sigma=>Float64, :epsilon=>Float64)
 
 Base.convert(::Type{T}, x::S) where {T<:Number, S<:AbstractString} = parse(T, x)
 
@@ -68,27 +73,44 @@ function ForceField(xml_file)
     bond_atom_2 = Vector{Int}()
     for elem in xroot["Residues"]
         for (residue_index, residue_item) in enumerate(elem["Residue"])
-            residue = Chemfiles.Residue(LightXML.attribute(residue_item, "name"), residue_index)
-            in_residue = Dict()
+            residue_name = LightXML.attribute(residue_item, "name")
+            residue = Chemfiles.Residue(residue_name, residue_index)
+            by_name = Dict()
+            name_of = Dict()
             atoms_in_residue = Vector{Int}()
             for (atom_index, atom_item) in enumerate(residue_item["Atom"])
-                name = LightXML.attribute(atom_item, "name")
-                type = LightXML.attribute(atom_item, "type")
-                charge = parse(Float64, LightXML.attribute(atom_item, "charge"))
+                attributes = LightXML.attributes_dict(atom_item)
+                name = attributes["name"]
+                type = attributes["type"]
+                charge = convert(Float64, get(attributes, "charge", 0))
                 atom = Chemfiles.Atom(name)
                 Chemfiles.set_type!(atom, type)
                 Chemfiles.set_charge!(atom, charge)
                 Chemfiles.set_mass!(atom, atom_types[in_types[type],:].mass)
-                in_residue[name] = (index += 1)
+                index += 1
+                by_name[name] = index
+                name_of[string(atom_index-1)] = name
                 push!(atoms_in_residue, index)
                 push!(atoms, atom)
             end
             push!(residues, residue)
             push!(residue_atoms, atoms_in_residue)
             for bond in residue_item["Bond"]
-                push!(bond_atom_1, in_residue[LightXML.attribute(bond, "atomName1")])
-                push!(bond_atom_2, in_residue[LightXML.attribute(bond, "atomName2")])
+                for (key, value) in LightXML.attributes_dict(bond)
+                    if key ∈ ["atomName1", "from"]
+                        push!(bond_atom_1, by_name[key == "atomName1" ? value : name_of[value]])
+                    elseif key ∈ ["atomName2", "to"]
+                        push!(bond_atom_2, by_name[key == "atomName2" ? value : name_of[value]])
+                    end
+                end
             end
+            external_bonds = []
+            for bond in residue_item["ExternalBond"]
+                for (key, value) in LightXML.attributes_dict(bond)
+                    push!(external_bonds, key == "atomName" ? name_of[value] : value)
+                end
+            end
+            Chemfiles.set_property!(residue, "external_bonds", join(external_bonds, ";"))
         end
     end
     bonds = vcat(bond_atom_1', bond_atom_2')
