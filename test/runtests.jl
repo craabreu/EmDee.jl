@@ -1,7 +1,6 @@
 using EmDee
 using Test
 using CUDA
-using DelimitedFiles
 import Chemfiles
 
 # function test_cells()
@@ -18,7 +17,8 @@ import Chemfiles
 # end
 
 function test_compute_nonbonded(xyz_file, L, cutoff, switch)
-    xyz_data = [row[i] for i=2:4, row in eachrow(readdlm(xyz_file; skipstart=2))]
+    frame = read(Chemfiles.Trajectory(xyz_file))
+    xyz_data = Chemfiles.positions(frame)
     positions = CUDA.cu(xyz_data)
     N = size(xyz_data, 2)
     model = LennardJonesModel(cutoff, switch)
