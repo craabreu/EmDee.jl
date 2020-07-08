@@ -113,20 +113,24 @@ function ForceField(xml_file)
 end
 
 function apply_force_field!(atom_list, adjacency, force_field)
+    num_residue_matches = 0
     for (residue_index, matrix) in enumerate(force_field.adjacency)
         if matrix == adjacency
             topology = Chemfiles.Topology(force_field.frame)
             residue = Chemfiles.Residue(topology, residue_index-1)
             residue_atoms = Chemfiles_atoms(residue)
+            num_atom_matches = 0
             for (index, atom_index) in enumerate(residue_atoms)
                 atom = atom_list[index]
                 template = Chemfiles.Atom(topology, atom_index)
-                isapprox(Chemfiles.mass(atom), Chemfiles.mass(template), atol=0.1) || return false
+                if isapprox(Chemfiles.mass(atom), Chemfiles.mass(template), atol=0.1)
+                    num_atom_matches += 1
+                end
                 Chemfiles.set_property!(atom, "ff.type", Chemfiles.type(template))
                 Chemfiles.set_property!(atom, "ff.charge", Chemfiles.charge(template))
             end
-            return true
+            num_atom_matches == length(residue_atoms) && (num_residue_matches += 1)
         end
     end
-    return false
+    return num_residue_matches
 end
