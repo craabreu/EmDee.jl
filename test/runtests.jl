@@ -53,8 +53,13 @@ function test_system(pdb_file, xml_file)
     return length(system) == 1519 && Chemfiles.count_residues(topology) == 500
 end
 
-@testset "EmDee.jl" begin
-    # @test test_cells()
-    @test test_compute_nonbonded(joinpath(@__DIR__, "data", "lj_sample.xyz"), 10, 3, 2.5)
+@testset "EmDee.jl[CPU]" begin
     @test test_system(joinpath(@__DIR__, "data", "dibenzo-p-dioxin-in-water.").*["pdb", "xml"]...)
+end
+
+if CUDA.functional()
+    @testset "EmDee.jl[GPU]" begin
+        # @test test_cells()
+        @test test_compute_nonbonded(joinpath(@__DIR__, "data", "lj_sample.xyz"), 10, 3, 2.5)
+    end
 end
