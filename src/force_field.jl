@@ -4,6 +4,17 @@ import LightXML
 import Chemfiles
 using DataFrames
 
+struct ForceField
+    atom_types::DataFrame
+    bond_types::DataFrame
+    angle_types::DataFrame
+    dihedral_types::DataFrame
+    improper_types::DataFrame
+    nonbonded::DataFrame
+    frame::Chemfiles.Frame
+    adjacency::Vector{BitArray{2}}
+end
+
 if isdefined(Chemfiles, :atoms)
     Chemfiles_atoms(residue::Chemfiles.Residue) = Chemfiles.atoms(residue)
 else
@@ -30,9 +41,10 @@ const PERIODIC_TORSION = Dict(:type1=>String, :type2=>String, :type3=>String, :t
 const NONBONDED = Dict(:type=>String, :sigma=>Float64, :epsilon=>Float64)
 
 Base.convert(::Type{T}, x::S) where {T<:Number, S<:AbstractString} = parse(T, x)
+
 Base.zero(::Type{String}) = ""
 
-function dataframe(category, element_list, key)
+function DataFrame(category, element_list, key)
     df = DataFrame(collect(values(category)), collect(keys(category)))
     zeros = Dict(string(key)=>zero(value) for (key, value) in category)
     for element in element_list
@@ -43,62 +55,38 @@ function dataframe(category, element_list, key)
     return df
 end
 
-struct ForceField
-    atom_types::DataFrame
-    bond_types::DataFrame
-    angle_types::DataFrame
-    dihedral_types::DataFrame
-    improper_types::DataFrame
-    frame::Chemfiles.Frame
-    adjacency::Vector{BitArray{2}}
-end
-
 function ForceField(xml_file)
     xroot = LightXML.root(LightXML.parse_file(xml_file))
-    atom_types = dataframe(ATOM_TYPE, xroot["AtomTypes"], "Type")
-    bond_types = dataframe(HARMONIC_BOND, xroot["HarmonicBondForce"], "Bond")
-    angle_types = dataframe(HARMONIC_ANGLE, xroot["HarmonicAngleForce"], "Angle")
-    dihedral_types = dataframe(PERIODIC_TORSION, xroot["PeriodicTorsionForce"], "Proper")
-    improper_types = dataframe(PERIODIC_TORSION, xroot["PeriodicTorsionForce"], "Improper")
-    nonbonded = dataframe(NONBONDED, xroot["NonbondedForce"], "Atom")
-
-    index = 0
+    atom_types = DataFrame(ATOM_TYPE, xroot["AtomTypes"], "Type")
     in_types = Dict(atom_types.name .=> collect(1:nrow(atom_types)))
-    in_nonbonded = Dict(nonbonded.type .=> collect(1:nrow(nonbonded)))
-    in_frame = Dict()
-    residues = []
-    atoms = []
+    index = 0
+    atoms = Vector{Chemfiles.Atom}()
+    residues = Vector{Chemfiles.Residue}()
     residue_atoms = Vector{Vector{Int}}()
     bond_atom_1 = Vector{Int}()
     bond_atom_2 = Vector{Int}()
     for elem in xroot["Residues"]
         for (residue_index, residue_item) in enumerate(elem["Residue"])
             residue = Chemfiles.Residue(LightXML.attribute(residue_item, "name"), residue_index)
-            push!(residues, residue)
-            atoms_in_residue = []
+            in_residue = Dict()
+            atoms_in_residue = Vector{Int}()
             for (atom_index, atom_item) in enumerate(residue_item["Atom"])
                 name = LightXML.attribute(atom_item, "name")
                 type = LightXML.attribute(atom_item, "type")
                 charge = parse(Float64, LightXML.attribute(atom_item, "charge"))
                 atom = Chemfiles.Atom(name)
-                data = atom_types[in_types[type],:]
-                parameters = nonbonded[in_nonbonded[type],:]
                 Chemfiles.set_type!(atom, type)
                 Chemfiles.set_charge!(atom, charge)
-                Chemfiles.set_mass!(atom, data.mass)
-                Chemfiles.set_property!(atom, "class", data.class)
-                Chemfiles.set_property!(atom, "element", data.element)
-                Chemfiles.set_property!(atom, "sigma", parameters.sigma)
-                Chemfiles.set_property!(atom, "epsilon", parameters.epsilon)
-                index += 1
-                in_frame[name] = index
+                Chemfiles.set_mass!(atom, atom_types[in_types[type],:].mass)
+                in_residue[name] = (index += 1)
                 push!(atoms_in_residue, index)
                 push!(atoms, atom)
             end
+            push!(residues, residue)
             push!(residue_atoms, atoms_in_residue)
             for bond in residue_item["Bond"]
-                push!(bond_atom_1, in_frame[LightXML.attribute(bond, "atomName1")])
-                push!(bond_atom_2, in_frame[LightXML.attribute(bond, "atomName2")])
+                push!(bond_atom_1, in_residue[LightXML.attribute(bond, "atomName1")])
+                push!(bond_atom_2, in_residue[LightXML.attribute(bond, "atomName2")])
             end
         end
     end
@@ -116,9 +104,12 @@ function ForceField(xml_file)
     for (atom_1, atom_2) in eachcol(bonds)
         Chemfiles.add_bond!(frame, mapping[atom_1], mapping[atom_2])
     end
-    return ForceField(atom_types, bond_types, angle_types,
-                      dihedral_types, improper_types,
-                      frame, adjacency)
+    bonds = DataFrame(HARMONIC_BOND, xroot["HarmonicBondForce"], "Bond")
+    angles = DataFrame(HARMONIC_ANGLE, xroot["HarmonicAngleForce"], "Angle")
+    dihedrals = DataFrame(PERIODIC_TORSION, xroot["PeriodicTorsionForce"], "Proper")
+    impropers = DataFrame(PERIODIC_TORSION, xroot["PeriodicTorsionForce"], "Improper")
+    nonbonded = DataFrame(NONBONDED, xroot["NonbondedForce"], "Atom")
+    return ForceField(atom_types, bonds, angles, dihedrals, impropers, nonbonded, frame, adjacency)
 end
 
 function apply_force_field!(atom_list, adjacency, force_field)
@@ -131,12 +122,8 @@ function apply_force_field!(atom_list, adjacency, force_field)
                 atom = atom_list[index]
                 template = Chemfiles.Atom(topology, atom_index)
                 isapprox(Chemfiles.mass(atom), Chemfiles.mass(template), atol=0.1) || return false
-                Chemfiles.set_mass!(atom, Chemfiles.mass(template))
-                Chemfiles.set_charge!(atom, Chemfiles.charge(template))
-                Chemfiles.set_type!(atom, Chemfiles.type(template))
-                for property in Chemfiles.list_properties(template)
-                    Chemfiles.set_property!(atom, property, Chemfiles.property(template, property))
-                end
+                Chemfiles.set_property!(atom, "ff.type", Chemfiles.type(template))
+                Chemfiles.set_property!(atom, "ff.charge", Chemfiles.charge(template))
             end
             return true
         end

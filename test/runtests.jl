@@ -49,8 +49,8 @@ end
 function test_system(pdb_file, xml_file)
     force_field = ForceField(xml_file)
     system = System(pdb_file, force_field)
-    topology = Chemfiles.Topology(system.frame)
-    return length(system.frame) == 1519 && Chemfiles.count_residues(topology) == 500
+    topology = Chemfiles.Topology(system)
+    return length(system) == 1519 && Chemfiles.count_residues(topology) == 500
 end
 
 @testset "EmDee.jl" begin
