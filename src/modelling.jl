@@ -56,7 +56,7 @@ Base.zero(::Type{String}) = ""
 attribute_dicts(list, key) = [LightXML.attributes_dict(a) for e in list for a in e[key]]
 
 function DataFrame(category, element_list, key)
-    df = DataFrame(collect(values(category)), collect(keys(category)))
+    df = DataFrame((collect∘values)(category), (collect∘keys)(category))
     zeros = LittleDict(string(key)=>zero(value) for (key, value) in category)
     for dict in attribute_dicts(element_list, key)
         append!(df, merge(zeros, dict))
@@ -96,8 +96,6 @@ function ForceField(xml_file)
                 push!(atoms_in_residue, index)
                 push!(atoms, atom)
             end
-            push!(residues, residue)
-            push!(residue_atoms, atoms_in_residue)
             for bond in residue_item["Bond"]
                 for (key, value) in LightXML.attributes_dict(bond)
                     if key ∈ ["atomName1", "from"]
@@ -107,13 +105,20 @@ function ForceField(xml_file)
                     end
                 end
             end
-            external_bonds = []
             for bond in residue_item["ExternalBond"]
                 for (key, value) in LightXML.attributes_dict(bond)
-                    push!(external_bonds, key == "atomName" ? name_of[value] : value)
+                    name_1 = key == "atomName" ? value : name_of[value]
+                    name_2 = "$(name_1)-"
+                    push!(bond_atom_1, by_name[name_1])
+                    push!(bond_atom_2, length(atoms_in_residue))
+                    atom = Chemfiles.Atom(name_2)
+                    push!(atoms, atom)
+                    index += 1
+                    push!(atoms_in_residue, index)
                 end
             end
-            Chemfiles.set_property!(residue, "external_bonds", join(external_bonds, ";"))
+            push!(residues, residue)
+            push!(residue_atoms, atoms_in_residue)
         end
     end
     bonds = vcat(bond_atom_1', bond_atom_2')
@@ -127,9 +132,6 @@ function ForceField(xml_file)
         end
         Chemfiles.add_residue!(frame, residue)
     end
-    for (atom_1, atom_2) in eachcol(bonds)
-        Chemfiles.add_bond!(frame, mapping[atom_1], mapping[atom_2])
-    end
 
     bonds = DataFrame(HARMONIC_BOND, xroot["HarmonicBondForce"], "Bond")
     angles = DataFrame(HARMONIC_ANGLE, xroot["HarmonicAngleForce"], "Angle")
@@ -138,7 +140,7 @@ function ForceField(xml_file)
     nonbonded = DataFrame(NONBONDED, xroot["NonbondedForce"], "Atom")
 
     dicts = attribute_dicts(xroot["NonbondedForce"], "UseAttributeFromResidue")
-    from_residue = (collect∘values∘merge)(dicts...)
+    from_residue = isempty(dicts) ? Vector{String}() : (collect∘values∘merge)(dicts...)
 
     factors = DataFrame([Float64, Float64], [:lj14scale, :coulomb14scale])
     defaults = LittleDict("lj14scale"=>1.0, "coulomb14scale"=>1.0)
@@ -171,6 +173,8 @@ function apply_force_field!(atom_list, adjacency, force_field)
     return num_residue_matches
 end
 
+const RESIDUES_XML = LightXML.root(LightXML.parse_file(joinpath(@__DIR__, "data", "residues.xml")))
+
 function System(file, force_field)
     trajectory = Chemfiles.Trajectory(file)
     frame = read(trajectory)
@@ -198,12 +202,16 @@ function System(file, force_field)
         name = Chemfiles.name(residue)
         matches = apply_force_field!(atoms[residue_atoms[index]], adjacency[index], force_field)
         if matches != 1
-            error("$(matches == 0 ? "No" : "Multiple") force field templates for residue $(name)")
+            println("$(matches == 0 ? "No" : "Multiple") force field templates for residue $(name)")
         end
         new_residue = Chemfiles.Residue(name, index)
         for i in residue_atoms[index]
             Chemfiles.add_atom!(system, atoms[i], positions[:, i], velocities[:, i])
             Chemfiles.add_atom!(new_residue, mapping[i])
+        end
+        for property in Chemfiles.list_properties(residue)
+            Chemfiles.set_property!(new_residue, property, Chemfiles.property(residue, property))
+            @show property Chemfiles.property(residue, property)
         end
         Chemfiles.add_residue!(system, new_residue)
     end
