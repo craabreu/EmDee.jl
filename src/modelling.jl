@@ -4,6 +4,7 @@ export ForceField,
 import LightXML
 import Chemfiles
 using DataFrames
+using OrderedCollections
 
 struct ForceField
     atom_types::DataFrame
@@ -12,6 +13,8 @@ struct ForceField
     dihedral_types::DataFrame
     improper_types::DataFrame
     nonbonded::DataFrame
+    factors::DataFrame
+    from_residue::Vector{String}
     frame::Chemfiles.Frame
     adjacency::Vector{BitArray{2}}
 end
@@ -27,36 +30,36 @@ else
     end
 end
 
-const ATOM_TYPE = Dict(:name=>String, :class=>String, :element=>String, :mass=>Float64)
+const ATOM_TYPE = LittleDict(:name=>String, :class=>String, :element=>String, :mass=>Float64)
 
-const HARMONIC_BOND = Dict(:type1=>String, :type2=>String,
-                           :class1=>String, :class2=>String,
-                           :length=>Float64, :k=>Float64)
+const HARMONIC_BOND = LittleDict(:type1=>String, :type2=>String,
+                                 :class1=>String, :class2=>String,
+                                 :length=>Float64, :k=>Float64)
 
-const HARMONIC_ANGLE = Dict(:type1=>String, :type2=>String, :type3=>String,
-                            :class1=>String, :class2=>String, :class3=>String,
-                            :angle=>Float64, :k=>Float64)
+const HARMONIC_ANGLE = LittleDict(:type1=>String, :type2=>String, :type3=>String,
+                                  :class1=>String, :class2=>String, :class3=>String,
+                                  :angle=>Float64, :k=>Float64)
 
-const PERIODIC_TORSION = Dict(:type1=>String, :type2=>String, :type3=>String, :type4=>String,
-                              :class1=>String, :class2=>String, :class3=>String, :class4=>String,
-                              :periodicity1=>Int, :phase1=>Float64, :k1=>Float64,
-                              :periodicity2=>Int, :phase2=>Float64, :k2=>Float64,
-                              :periodicity3=>Int, :phase3=>Float64, :k3=>Float64,
-                              :periodicity4=>Int, :phase4=>Float64, :k4=>Float64)
+const PERIODIC_TORSION = LittleDict(:type1=>String, :type2=>String, :type3=>String, :type4=>String,
+                                    :class1=>String, :class2=>String, :class3=>String, :class4=>String,
+                                    :periodicity1=>Int, :phase1=>Float64, :k1=>Float64,
+                                    :periodicity2=>Int, :phase2=>Float64, :k2=>Float64,
+                                    :periodicity3=>Int, :phase3=>Float64, :k3=>Float64,
+                                    :periodicity4=>Int, :phase4=>Float64, :k4=>Float64)
 
-const NONBONDED = Dict(:type=>String, :charge=>Float64, :sigma=>Float64, :epsilon=>Float64)
+const NONBONDED = LittleDict(:type=>String, :charge=>Float64, :sigma=>Float64, :epsilon=>Float64)
 
 Base.convert(::Type{T}, x::S) where {T<:Number, S<:AbstractString} = parse(T, x)
 
 Base.zero(::Type{String}) = ""
 
+attribute_dicts(list, key) = [LightXML.attributes_dict(a) for e in list for a in e[key]]
+
 function DataFrame(category, element_list, key)
     df = DataFrame(collect(values(category)), collect(keys(category)))
-    zeros = Dict(string(key)=>zero(value) for (key, value) in category)
-    for element in element_list
-        for item in element[key]
-            append!(df, merge(zeros, LightXML.attributes_dict(item)))
-        end
+    zeros = LittleDict(string(key)=>zero(value) for (key, value) in category)
+    for dict in attribute_dicts(element_list, key)
+        append!(df, merge(zeros, dict))
     end
     return df
 end
@@ -64,7 +67,7 @@ end
 function ForceField(xml_file)
     xroot = LightXML.root(LightXML.parse_file(xml_file))
     atom_types = DataFrame(ATOM_TYPE, xroot["AtomTypes"], "Type")
-    in_types = Dict(atom_types.name .=> collect(1:nrow(atom_types)))
+    in_types = LittleDict(atom_types.name .=> collect(1:nrow(atom_types)))
     index = 0
     atoms = Vector{Chemfiles.Atom}()
     residues = Vector{Chemfiles.Residue}()
@@ -75,8 +78,8 @@ function ForceField(xml_file)
         for (residue_index, residue_item) in enumerate(elem["Residue"])
             residue_name = LightXML.attribute(residue_item, "name")
             residue = Chemfiles.Residue(residue_name, residue_index)
-            by_name = Dict()
-            name_of = Dict()
+            by_name = LittleDict()
+            name_of = LittleDict()
             atoms_in_residue = Vector{Int}()
             for (atom_index, atom_item) in enumerate(residue_item["Atom"])
                 attributes = LightXML.attributes_dict(atom_item)
@@ -127,12 +130,22 @@ function ForceField(xml_file)
     for (atom_1, atom_2) in eachcol(bonds)
         Chemfiles.add_bond!(frame, mapping[atom_1], mapping[atom_2])
     end
+
     bonds = DataFrame(HARMONIC_BOND, xroot["HarmonicBondForce"], "Bond")
     angles = DataFrame(HARMONIC_ANGLE, xroot["HarmonicAngleForce"], "Angle")
     dihedrals = DataFrame(PERIODIC_TORSION, xroot["PeriodicTorsionForce"], "Proper")
     impropers = DataFrame(PERIODIC_TORSION, xroot["PeriodicTorsionForce"], "Improper")
     nonbonded = DataFrame(NONBONDED, xroot["NonbondedForce"], "Atom")
-    return ForceField(atom_types, bonds, angles, dihedrals, impropers, nonbonded, frame, adjacency)
+
+    dicts = attribute_dicts(xroot["NonbondedForce"], "UseAttributeFromResidue")
+    from_residue = (collect∘values∘merge)(dicts...)
+
+    factors = DataFrame([Float64, Float64], [:lj14scale, :coulomb14scale])
+    defaults = LittleDict("lj14scale"=>1.0, "coulomb14scale"=>1.0)
+    append!(factors, merge(defaults, LightXML.attributes_dict(xroot["NonbondedForce"][1])))
+
+    return ForceField(atom_types, bonds, angles, dihedrals, impropers, nonbonded,
+                      factors, from_residue, frame, adjacency)
 end
 
 function apply_force_field!(atom_list, adjacency, force_field)
@@ -184,8 +197,9 @@ function System(file, force_field)
     for (index, residue) in enumerate(residues)
         name = Chemfiles.name(residue)
         matches = apply_force_field!(atoms[residue_atoms[index]], adjacency[index], force_field)
-        matches > 0 || error("Incompatible force field")
-        matches < 2 || error("Multiple force field templates for residue $(name)")
+        if matches != 1
+            error("$(matches == 0 ? "No" : "Multiple") force field templates for residue $(name)")
+        end
         new_residue = Chemfiles.Residue(name, index)
         for i in residue_atoms[index]
             Chemfiles.add_atom!(system, atoms[i], positions[:, i], velocities[:, i])
