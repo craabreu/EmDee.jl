@@ -6,6 +6,11 @@ import Chemfiles
 using DataFrames
 using OrderedCollections
 
+struct ResidueTemplate
+    atoms::Vector{Chemfiles.Atom}
+    adjacency::BitArray{2}
+end
+
 struct ForceField
     atom_types::DataFrame
     bond_types::DataFrame
@@ -13,10 +18,9 @@ struct ForceField
     dihedral_types::DataFrame
     improper_types::DataFrame
     nonbonded::DataFrame
-    factors::DataFrame
-    from_residue::Vector{String}
-    frame::Chemfiles.Frame
-    adjacency::Vector{BitArray{2}}
+    templates::Vector{ResidueTemplate}
+    lj₁₋₄::Float64
+    coulomb₁₋₄::Float64
 end
 
 if isdefined(Chemfiles, :atoms)
@@ -65,23 +69,15 @@ function DataFrame(category, element_list, key)
 end
 
 function ForceField(xml_file)
-    xroot = LightXML.root(LightXML.parse_file(xml_file))
+    xml_root = LightXML.root(LightXML.parse_file(xml_file))
     atom_types = DataFrame(ATOM_TYPE, xroot["AtomTypes"], "Type")
-    in_types = LittleDict(atom_types.name .=> collect(1:nrow(atom_types)))
-    index = 0
-    atoms = Vector{Chemfiles.Atom}()
-    residues = Vector{Chemfiles.Residue}()
-    residue_atoms = Vector{Vector{Int}}()
-    bond_atom_1 = Vector{Int}()
-    bond_atom_2 = Vector{Int}()
-    for elem in xroot["Residues"]
+    type_index = LittleDict(atom_types.name .=> collect(1:nrow(atom_types)))
+    templates = Vector{ResidueTemplate}()
+    for elem in xml_root["Residues"]
         for (residue_index, residue_item) in enumerate(elem["Residue"])
-            residue_name = LightXML.attribute(residue_item, "name")
-            residue = Chemfiles.Residue(residue_name, residue_index)
-            by_name = LittleDict()
-            name_of = LittleDict()
-            atoms_in_residue = Vector{Int}()
-            for (atom_index, atom_item) in enumerate(residue_item["Atom"])
+            atoms = []
+            atom_index = LittleDict()
+            for (index, atom_item) in enumerate(residue_item["Atom"])
                 attributes = LightXML.attributes_dict(atom_item)
                 name = attributes["name"]
                 type = attributes["type"]
@@ -89,48 +85,29 @@ function ForceField(xml_file)
                 atom = Chemfiles.Atom(name)
                 Chemfiles.set_type!(atom, type)
                 Chemfiles.set_charge!(atom, charge)
-                Chemfiles.set_mass!(atom, atom_types[in_types[type],:].mass)
-                index += 1
-                by_name[name] = index
-                name_of[string(atom_index-1)] = name
-                push!(atoms_in_residue, index)
+                Chemfiles.set_mass!(atom, atom_types[type_index[type], :].mass)
                 push!(atoms, atom)
+                atom_index[name] = index
             end
+            natoms = length(atoms) + length(residue_item["ExternalBond"])
+            adjmat = falses(natoms, natoms)
             for bond in residue_item["Bond"]
-                for (key, value) in LightXML.attributes_dict(bond)
-                    if key ∈ ["atomName1", "from"]
-                        push!(bond_atom_1, by_name[key == "atomName1" ? value : name_of[value]])
-                    elseif key ∈ ["atomName2", "to"]
-                        push!(bond_atom_2, by_name[key == "atomName2" ? value : name_of[value]])
-                    end
-                end
+                i, j = [key ∈ ["to", "from"] ? parse(Int, value) + 1 : atom_index[value]
+                        for (key, value) in LightXML.attributes_dict(bond)]
+                adjmat[i, j] = adjmat[j, i] = true
             end
             for bond in residue_item["ExternalBond"]
                 for (key, value) in LightXML.attributes_dict(bond)
-                    name_1 = key == "atomName" ? value : name_of[value]
-                    name_2 = "$(name_1)-"
-                    push!(bond_atom_1, by_name[name_1])
-                    push!(bond_atom_2, length(atoms_in_residue))
-                    atom = Chemfiles.Atom(name_2)
-                    push!(atoms, atom)
-                    index += 1
-                    push!(atoms_in_residue, index)
+                    name = key == "from" ? Chemfiles.name(atoms[parse(Int, value) + 1]) : value
+                    push!(atoms, Chemfiles.Atom("$(name)*"))
+                    i = atom_index[name]
+                    j = length(atoms)
+                    adjmat[i, j] = adjmat[j, i] = true
                 end
             end
-            push!(residues, residue)
-            push!(residue_atoms, atoms_in_residue)
+            order, adjmat = canonical_form(adjmat)
+            push!(templates, ResidueTemplate(atoms[order], adjmat))
         end
-    end
-    bonds = vcat(bond_atom_1', bond_atom_2')
-    adjacency, mapping = canonical_mapping!(residue_atoms, bonds)
-    frame = Chemfiles.Frame()
-    for (residue, atoms_in_residue) in zip(residues, residue_atoms)
-        for index in atoms_in_residue
-            atom = atoms[index]
-            Chemfiles.add_atom!(frame, atom, zeros(3))
-            Chemfiles.add_atom!(residue, index-1)
-        end
-        Chemfiles.add_residue!(frame, residue)
     end
 
     bonds = DataFrame(HARMONIC_BOND, xroot["HarmonicBondForce"], "Bond")
@@ -139,15 +116,12 @@ function ForceField(xml_file)
     impropers = DataFrame(PERIODIC_TORSION, xroot["PeriodicTorsionForce"], "Improper")
     nonbonded = DataFrame(NONBONDED, xroot["NonbondedForce"], "Atom")
 
-    dicts = attribute_dicts(xroot["NonbondedForce"], "UseAttributeFromResidue")
-    from_residue = isempty(dicts) ? Vector{String}() : (collect∘values∘merge)(dicts...)
-
-    factors = DataFrame([Float64, Float64], [:lj14scale, :coulomb14scale])
-    defaults = LittleDict("lj14scale"=>1.0, "coulomb14scale"=>1.0)
-    append!(factors, merge(defaults, LightXML.attributes_dict(xroot["NonbondedForce"][1])))
+    scaling_factors = LightXML.attributes_dict(xroot["NonbondedForce"][1])
+    lj₁₋₄ = get(scaling_factors, "lj14scale", 1.0)
+    coulomb₁₋₄ = get(scaling_factors, "coulomb14scale", 1.0)
 
     return ForceField(atom_types, bonds, angles, dihedrals, impropers, nonbonded,
-                      factors, from_residue, frame, adjacency)
+                      templates, lj₁₋₄, coulomb₁₋₄)
 end
 
 function apply_force_field!(atom_list, adjacency, force_field)
