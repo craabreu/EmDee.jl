@@ -69,11 +69,11 @@ function DataFrame(category, element_list, key)
 end
 
 function ForceField(xml_file)
-    xml_root = LightXML.root(LightXML.parse_file(xml_file))
+    xroot = LightXML.root(LightXML.parse_file(xml_file))
     atom_types = DataFrame(ATOM_TYPE, xroot["AtomTypes"], "Type")
     type_index = LittleDict(atom_types.name .=> collect(1:nrow(atom_types)))
     templates = Vector{ResidueTemplate}()
-    for elem in xml_root["Residues"]
+    for elem in xroot["Residues"]
         for (residue_index, residue_item) in enumerate(elem["Residue"])
             atoms = []
             atom_index = LittleDict()
@@ -147,7 +147,45 @@ function apply_force_field!(atom_list, adjacency, force_field)
     return num_residue_matches
 end
 
-const RESIDUES_XML = LightXML.root(LightXML.parse_file(joinpath(@__DIR__, "data", "residues.xml")))
+function pdb_standard_bonds(residues, pdb_names)
+    pdb_names_root = LightXML.root(LightXML.parse_file(pdb_names))
+    glossary = LittleDict()
+    alternatives = LittleDict()
+    for element in pdb_names_root["Residue"]
+        attributes = LightXML.attributes_dict(element)
+        atoms_dict = haskey(attributes, "type") ? copy(glossary[attributes["type"]]) : LittleDict()
+        for item in element["Atom"]
+            list = join(values(LightXML.attributes_dict(item)), "|")
+            atoms_dict[LightXML.attribute(item, "name")] = Regex("\\b($(list))\\b")
+        end
+        glossary[attributes["name"]] = atoms_dict
+        alt_names = []
+        while haskey(attributes, "alt$(length(alt_names) + 1)")
+            push!(alt_names, attributes["alt$(length(alt_names) + 1)"])
+        end
+        alternatives[attributes["name"]] = alt_names
+    end
+
+    residues_root = LightXML.root(LightXML.parse_file(residues))
+    residue_dict = LittleDict{String, Vector{Vector{Regex}}}()
+    regex(x) = Regex("\\b($(replace(x, "-" => "_")))\\b")
+    for element in residues_root["Residue"]
+        attributes = LightXML.attributes_dict(element)
+        name = attributes["name"]
+        residue_dict[name] = [map(x->get(glossary[name], x, regex(x)),
+                              values(LightXML.attributes_dict(item)))
+                              for item in element["Bond"]]
+        for alt in alternatives[name]
+            residue_dict[alt] = residue_dict[name]
+        end
+    end
+    return residue_dict
+end
+
+const STANDARD_BONDS = pdb_standard_bonds(broadcast(joinpath, @__DIR__, "data", ["residues.xml", "pdbNames.xml"])...)
+
+
+
 
 function System(file, force_field)
     trajectory = Chemfiles.Trajectory(file)
@@ -164,34 +202,64 @@ function System(file, force_field)
     num_residues = Chemfiles.count_residues(topology)
     residues = [Chemfiles.Residue(topology, index) for index = 0:num_residues-1]
     atoms = [Chemfiles.Atom(topology, index) for index = 0:num_atoms-1]
-    bonds = Chemfiles.bonds(topology) .+ 1
-    residue_atoms = map((x->x.+1) ∘ Chemfiles_atoms, residues)
+    # bonds = Chemfiles.bonds(topology) .+ 1
+    original_bonds = Chemfiles.bonds(topology) .+ 1
+    # residue_atoms = map((x->x.+1) ∘ Chemfiles_atoms, residues)
 
-    adjacency, mapping = canonical_mapping!(residue_atoms, bonds)
-
-    system = Chemfiles.Frame()
-    Chemfiles.set_cell!(system, unit_cell)
-    has_velocities && Chemfiles.add_velocities!(system)
+    bonds = []
+    chain_id = ""
+    previous_indices = previous_names = []
     for (index, residue) in enumerate(residues)
-        name = Chemfiles.name(residue)
-        matches = apply_force_field!(atoms[residue_atoms[index]], adjacency[index], force_field)
-        if matches != 1
-            println("$(matches == 0 ? "No" : "Multiple") force field templates for residue $(name)")
+        atom_indices = Chemfiles_atoms(residue) .+ 1
+        atom_names = Chemfiles.name.(atoms[atom_indices])
+        residue_name = Chemfiles.name(residue)
+        if Chemfiles.property(residue, "is_standard_pdb")
+            new_chain = Chemfiles.property(residue, "chainid") != chain_id
+            if new_chain
+                chain_id = Chemfiles.property(residue, "chainid")
+                previous_indices = previous_names = []
+            end
+            combined_indices = vcat(previous_indices, atom_indices)
+            combined_names = vcat(previous_names, atom_names)
+            for (atom_1, atom_2) in STANDARD_BONDS[residue_name]
+                from = broadcast(occursin, atom_1, combined_names) |> findfirst
+                to = broadcast(occursin, atom_2, combined_names) |> findfirst
+                from === nothing || to === nothing || push!(bonds, combined_indices[[from, to]])
+            end
+            previous_indices = atom_indices
+            previous_names = "_".*atom_names
+        else
+            # TODO: For non-standard residues, use bond from original bonds
         end
-        new_residue = Chemfiles.Residue(name, index)
-        for i in residue_atoms[index]
-            Chemfiles.add_atom!(system, atoms[i], positions[:, i], velocities[:, i])
-            Chemfiles.add_atom!(new_residue, mapping[i])
-        end
-        for property in Chemfiles.list_properties(residue)
-            Chemfiles.set_property!(new_residue, property, Chemfiles.property(residue, property))
-            @show property Chemfiles.property(residue, property)
-        end
-        Chemfiles.add_residue!(system, new_residue)
     end
-    bond_orders = Chemfiles.bond_orders(topology)
-    for ((atom_1, atom_2), order) in zip(eachcol(bonds), bond_orders)
-        Chemfiles.add_bond!(system, mapping[atom_1], mapping[atom_2], order)
-    end
+
+    # println.(bonds)
+    return [Chemfiles.name.(atoms[[i,j]]) for (i,j) in bonds]
+    # adjacency, mapping = canonical_mapping!(residue_atoms, bonds)
+    # 
+    system = Chemfiles.Frame()
+    # Chemfiles.set_cell!(system, unit_cell)
+    # has_velocities && Chemfiles.add_velocities!(system)
+    # for (index, residue) in enumerate(residues)
+    #     name = Chemfiles.name(residue)
+    #     matches = apply_force_field!(atoms[residue_atoms[index]], adjacency[index], force_field)
+    #     if matches != 1
+    #         println("$(matches == 0 ? "No" : "Multiple") force field templates for residue $(name)")
+    #     end
+    #     new_residue = Chemfiles.Residue(name, index)
+    #     for i in residue_atoms[index]
+    #         Chemfiles.add_atom!(system, atoms[i], positions[:, i], velocities[:, i])
+    #         Chemfiles.add_atom!(new_residue, mapping[i])
+    #     end
+    #     for property in Chemfiles.list_properties(residue)
+    #         Chemfiles.set_property!(new_residue, property, Chemfiles.property(residue, property))
+    #         @show property Chemfiles.property(residue, property)
+    #     end
+    #     Chemfiles.add_residue!(system, new_residue)
+    # end
+    # bond_orders = Chemfiles.bond_orders(topology)
+    # for ((atom_1, atom_2), order) in zip(eachcol(bonds), bond_orders)
+    #     Chemfiles.add_bond!(system, mapping[atom_1], mapping[atom_2], order)
+    # end
     return system
 end
