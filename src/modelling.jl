@@ -57,11 +57,10 @@ Base.convert(::Type{T}, x::S) where {T<:Number, S<:AbstractString} = parse(T, x)
 
 Base.zero(::Type{String}) = ""
 
-attribute_dicts(list, key) = [LightXML.attributes_dict(a) for e in list for a in e[key]]
-
 function DataFrame(category, element_list, key)
     df = DataFrame((collect∘values)(category), (collect∘keys)(category))
     zeros = LittleDict(string(key)=>zero(value) for (key, value) in category)
+    attribute_dicts(list, key) = [LightXML.attributes_dict(a) for e in list for a in e[key]]
     for dict in attribute_dicts(element_list, key)
         append!(df, merge(zeros, dict))
     end
@@ -147,45 +146,17 @@ function apply_force_field!(atom_list, adjacency, force_field)
     return num_residue_matches
 end
 
-function pdb_standard_bonds(residues, pdb_names)
-    pdb_names_root = LightXML.root(LightXML.parse_file(pdb_names))
-    glossary = LittleDict()
-    alternatives = LittleDict()
-    for element in pdb_names_root["Residue"]
-        attributes = LightXML.attributes_dict(element)
-        atoms_dict = haskey(attributes, "type") ? copy(glossary[attributes["type"]]) : LittleDict()
-        for item in element["Atom"]
-            list = join(values(LightXML.attributes_dict(item)), "|")
-            atoms_dict[LightXML.attribute(item, "name")] = Regex("\\b($(list))\\b")
-        end
-        glossary[attributes["name"]] = atoms_dict
-        alt_names = []
-        while haskey(attributes, "alt$(length(alt_names) + 1)")
-            push!(alt_names, attributes["alt$(length(alt_names) + 1)"])
-        end
-        alternatives[attributes["name"]] = alt_names
-    end
-
-    residues_root = LightXML.root(LightXML.parse_file(residues))
-    residue_dict = LittleDict{String, Vector{Vector{Regex}}}()
-    regex(x) = Regex("\\b($(replace(x, "-" => "_")))\\b")
-    for element in residues_root["Residue"]
-        attributes = LightXML.attributes_dict(element)
-        name = attributes["name"]
-        residue_dict[name] = [map(x->get(glossary[name], x, regex(x)),
-                              values(LightXML.attributes_dict(item)))
-                              for item in element["Bond"]]
-        for alt in alternatives[name]
-            residue_dict[alt] = residue_dict[name]
-        end
-    end
-    return residue_dict
+function pdb_aliases(pdb_aliases_file)
+    name(element) = LightXML.attribute(element, "name")
+    regex(item) = Regex(LightXML.attribute(item, "code"))
+    ids(item) = parse.(Int, values(LightXML.attributes_dict(item)))
+    xroot = LightXML.root(LightXML.parse_file(pdb_aliases_file))
+    regex_codes = regex.(xroot["RegularExpressions"][1]["Regex"])
+    std_bonds = LittleDict(name(e) => ids.(e["Bond"]) for e in xroot["Residue"])
+    return regex_codes, std_bonds
 end
 
-const STANDARD_BONDS = pdb_standard_bonds(broadcast(joinpath, @__DIR__, "data", ["residues.xml", "pdbNames.xml"])...)
-
-
-
+const PDB_REGEX_CODES, PDB_STD_BONDS = pdb_aliases(joinpath(@__DIR__, "data", "pdb_aliases.xml"))
 
 function System(file, force_field)
     trajectory = Chemfiles.Trajectory(file)
@@ -200,20 +171,27 @@ function System(file, force_field)
 
     num_atoms = size(topology)
     num_residues = Chemfiles.count_residues(topology)
-    residues = [Chemfiles.Residue(topology, index) for index = 0:num_residues-1]
     atoms = [Chemfiles.Atom(topology, index) for index = 0:num_atoms-1]
-    # bonds = Chemfiles.bonds(topology) .+ 1
-    original_bonds = Chemfiles.bonds(topology) .+ 1
-    # residue_atoms = map((x->x.+1) ∘ Chemfiles_atoms, residues)
-
-    bonds = []
+    residues = [Chemfiles.Residue(topology, index) for index = 0:num_residues-1]
+    residue_atoms = map((x->x.+1) ∘ Chemfiles_atoms, residues)
+    atom_residues = Vector{Int}(undef, num_atoms)
+    internal_map = Vector{Int}(undef, num_atoms)
+    for (index, atoms_list) in enumerate(residue_atoms)
+        atom_residues[atoms_list] .= index
+        internal_map[atoms_list] .= collect(1:length(atoms_list))
+    end
+    is_std_pdb = Chemfiles.property.(residues, "is_standard_pdb")
+    bonds = [collect(bond)
+             for bond in eachcol(Chemfiles.bonds(topology) .+ 1)
+             if !all(is_std_pdb[atom_residues[bond]])]
     chain_id = ""
     previous_indices = previous_names = []
-    for (index, residue) in enumerate(residues)
-        atom_indices = Chemfiles_atoms(residue) .+ 1
+    for index in 1:num_residues
+        residue = residues[index]
+        atom_indices = residue_atoms[index]
         atom_names = Chemfiles.name.(atoms[atom_indices])
         residue_name = Chemfiles.name(residue)
-        if Chemfiles.property(residue, "is_standard_pdb")
+        if is_std_pdb[index]
             new_chain = Chemfiles.property(residue, "chainid") != chain_id
             if new_chain
                 chain_id = Chemfiles.property(residue, "chainid")
@@ -221,24 +199,22 @@ function System(file, force_field)
             end
             combined_indices = vcat(previous_indices, atom_indices)
             combined_names = vcat(previous_names, atom_names)
-            for (atom_1, atom_2) in STANDARD_BONDS[residue_name]
-                from = broadcast(occursin, atom_1, combined_names) |> findfirst
-                to = broadcast(occursin, atom_2, combined_names) |> findfirst
+            for (atom_1, atom_2) in PDB_STD_BONDS[residue_name]
+                from = broadcast(occursin, PDB_REGEX_CODES[atom_1], combined_names) |> findfirst
+                to = broadcast(occursin, PDB_REGEX_CODES[atom_2], combined_names) |> findfirst
                 from === nothing || to === nothing || push!(bonds, combined_indices[[from, to]])
             end
             previous_indices = atom_indices
             previous_names = "_".*atom_names
-        else
-            # TODO: For non-standard residues, use bond from original bonds
         end
     end
 
-    # println.(bonds)
-    return [Chemfiles.name.(atoms[[i,j]]) for (i,j) in bonds]
     # adjacency, mapping = canonical_mapping!(residue_atoms, bonds)
-    # 
+
+    return bonds
+    
     system = Chemfiles.Frame()
-    # Chemfiles.set_cell!(system, unit_cell)
+    Chemfiles.set_cell!(system, unit_cell)
     # has_velocities && Chemfiles.add_velocities!(system)
     # for (index, residue) in enumerate(residues)
     #     name = Chemfiles.name(residue)
