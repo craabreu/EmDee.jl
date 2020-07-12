@@ -56,16 +56,18 @@ function graph2matrix(graph)
     return graph[nw:-1:nw-n+1,:]
 end
 
-function canonical_form(matrix)
+function canonical_form(matrix, colors; atol=0.1)
     n = size(matrix, 1)
     m = cld(n, WORDSIZE)
-    lab = Vector{Cint}(undef, n)
-    ptn = Vector{Cint}(undef, n)
+    lab = Vector{Cint}(sortperm(colors))
+    ptn = Vector{Cint}(abs.(diff(colors[lab])) .<= atol)
+    lab .= lab .- 1
+    push!(ptn, 0)
     orbits = Vector{Cint}(undef, n)
     g = matrix2graph(matrix)
     cg = similar(g)
     dispatch_graph = cglobal((:dispatch_graph, LIB_FILE), Nothing)
-    option_block = OptionBlk(getcanon=true, dispatch=dispatch_graph)
+    option_block = OptionBlk(getcanon=true, defaultptn=false, dispatch=dispatch_graph)
     ccall(
         (:densenauty, LIB_FILE),
         Cvoid,
@@ -73,30 +75,4 @@ function canonical_form(matrix)
         g.chunks, lab, ptn, orbits, option_block, StatsBlk(), m, n, cg.chunks
     )
     return reverse(lab .+ 1), graph2matrix(cg)[n:-1:1, n:-1:1]
-end
-
-function canonical_mapping!(residue_atoms, bonds)
-    num_atoms = sum(length.(residue_atoms))
-    atom_residue = Vector{UInt128}(undef, num_atoms)
-    internal_map = Vector{UInt128}(undef, num_atoms)
-    for (index, atom_indices) in enumerate(residue_atoms)
-        atom_residue[atom_indices] .= index
-        internal_map[atom_indices] .= collect(1:length(atom_indices))
-    end
-    adjacency = map(n->falses(n, n), map(length, residue_atoms))
-    for (atom_1, atom_2) in eachcol(bonds)
-        index = atom_residue[atom_1]
-        if atom_residue[atom_2] == index
-            i = internal_map[atom_1]
-            j = internal_map[atom_2]
-            adjacency[index][i, j] = adjacency[index][j, i] = true
-        end
-    end
-    for index = 1:length(residue_atoms)
-        canonical_order, canonical_adjacency = canonical_form(adjacency[index])
-        residue_atoms[index] .= residue_atoms[index][canonical_order]
-        adjacency[index] .= canonical_adjacency
-    end
-    mapping = invperm(vcat(residue_atoms...)) .- 1
-    return adjacency, mapping
 end
