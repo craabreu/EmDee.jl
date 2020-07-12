@@ -1,45 +1,53 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Residues>
+  <Elements>
+    <Element name="H" mass="1.008"/>
+    <Element name="C" mass="12.011"/>
+    <Element name="N" mass="14.007"/>
+    <Element name="O" mass="15.999"/>
+    <Element name="P" mass="30.973762"/>
+    <Element name="S" mass="32.06"/>
+  </Elements>
   <RegularExpressions>
     <Regex id="1" code="\b(P)\b"/>
-    <Regex id="2" code="\b(_O3')\b"/>
-    <Regex id="3" code="\b(C2'|C2*)\b"/>
-    <Regex id="4" code="\b(C1'|C1*)\b"/>
-    <Regex id="5" code="\b(H1'|H1*)\b"/>
+    <Regex id="2" code="\b(_O3p)\b"/>
+    <Regex id="3" code="\b(C2p|C2a)\b"/>
+    <Regex id="4" code="\b(C1p|C1a)\b"/>
+    <Regex id="5" code="\b(H1p|H1a)\b"/>
     <Regex id="6" code="\b(N9)\b"/>
-    <Regex id="7" code="\b(O4'|O4*)\b"/>
+    <Regex id="7" code="\b(O4p|O4a)\b"/>
     <Regex id="8" code="\b(H2)\b"/>
     <Regex id="9" code="\b(C2)\b"/>
     <Regex id="10" code="\b(N1)\b"/>
     <Regex id="11" code="\b(N3)\b"/>
-    <Regex id="12" code="\b(C3'|C3*)\b"/>
-    <Regex id="13" code="\b(H2'|1H2'|H2'1|1H2*|H2*)\b"/>
-    <Regex id="14" code="\b(O2'|O2*)\b"/>
-    <Regex id="15" code="\b(C4'|C4*)\b"/>
-    <Regex id="16" code="\b(H3'|H3*)\b"/>
-    <Regex id="17" code="\b(O3'|O3*)\b"/>
+    <Regex id="12" code="\b(C3p|C3a)\b"/>
+    <Regex id="13" code="\b(H2p|1H2p|H2p1|1H2a|H2a)\b"/>
+    <Regex id="14" code="\b(O2p|O2a)\b"/>
+    <Regex id="15" code="\b(C4p|C4a)\b"/>
+    <Regex id="16" code="\b(H3p|H3a)\b"/>
+    <Regex id="17" code="\b(O3p|O3a)\b"/>
     <Regex id="18" code="\b(C5)\b"/>
     <Regex id="19" code="\b(C4)\b"/>
-    <Regex id="20" code="\b(C5'|C5*)\b"/>
-    <Regex id="21" code="\b(H4'|H4*)\b"/>
+    <Regex id="20" code="\b(C5p|C5a)\b"/>
+    <Regex id="21" code="\b(H4p|H4a)\b"/>
     <Regex id="22" code="\b(C6)\b"/>
     <Regex id="23" code="\b(N7)\b"/>
-    <Regex id="24" code="\b(H5'|H5'1|1H5'|1H5*)\b"/>
-    <Regex id="25" code="\b(H5''|H5'2|2H5'|2H5*)\b"/>
-    <Regex id="26" code="\b(O5'|O5*)\b"/>
+    <Regex id="24" code="\b(H5p|H5p1|1H5p|1H5a)\b"/>
+    <Regex id="25" code="\b(H5pp|H5p2|2H5p|2H5a)\b"/>
+    <Regex id="26" code="\b(O5p|O5a)\b"/>
     <Regex id="27" code="\b(N6)\b"/>
     <Regex id="28" code="\b(H8)\b"/>
     <Regex id="29" code="\b(C8)\b"/>
     <Regex id="30" code="\b(H61|1H6)\b"/>
     <Regex id="31" code="\b(H62|2H6)\b"/>
-    <Regex id="32" code="\b(HO2'|2HO*)\b"/>
-    <Regex id="33" code="\b(HO3'|H3T)\b"/>
+    <Regex id="32" code="\b(HO2p|2HOa)\b"/>
+    <Regex id="33" code="\b(HO3p|H3T)\b"/>
     <Regex id="34" code="\b(OP2|O2P)\b"/>
     <Regex id="35" code="\b(HOP2|2HOP)\b"/>
     <Regex id="36" code="\b(OP3|O3P)\b"/>
     <Regex id="37" code="\b(HOP3|3HOP)\b"/>
     <Regex id="38" code="\b(OP1|O1P)\b"/>
-    <Regex id="39" code="\b(HO5'|H5T)\b"/>
+    <Regex id="39" code="\b(HO5p|H5T)\b"/>
     <Regex id="40" code="\b(CH3|CA|CAY)\b"/>
     <Regex id="41" code="\b(C|CY)\b"/>
     <Regex id="42" code="\b(H|1H|HN1|HT1|H1|HN)\b"/>
@@ -101,7 +109,7 @@
     <Regex id="98" code="\b(H42|2H4)\b"/>
     <Regex id="99" code="\b(SG|SG1)\b"/>
     <Regex id="100" code="\b(HG|HSG|HG1)\b"/>
-    <Regex id="101" code="\b(H2''|H2'2|2H2'|2H2*)\b"/>
+    <Regex id="101" code="\b(H2pp|H2p2|2H2p|2H2a)\b"/>
     <Regex id="102" code="\b(N2)\b"/>
     <Regex id="103" code="\b(O6)\b"/>
     <Regex id="104" code="\b(H1)\b"/>
