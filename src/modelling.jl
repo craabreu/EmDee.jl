@@ -85,6 +85,8 @@ function DataFrame(category, element_list, key)
     return df
 end
 
+sanitized(str) = replace(replace(replace(str, "-" => "_"), "'" => "p"), "*" => "a")
+
 function ForceField(xml_file)
     xroot = LightXML.root(LightXML.parse_file(xml_file))
     atom_types = DataFrame(ATOM_TYPE, xroot["AtomTypes"], "Type")
@@ -96,7 +98,7 @@ function ForceField(xml_file)
             atom_index = LittleDict()
             for (index, atom_item) in enumerate(residue_item["Atom"])
                 attributes = LightXML.attributes_dict(atom_item)
-                name = attributes["name"]
+                name = sanitized(attributes["name"])
                 type = attributes["type"]
                 charge = convert(Float64, get(attributes, "charge", 0))
                 atom = Chemfiles.Atom(name)
@@ -110,7 +112,7 @@ function ForceField(xml_file)
             adjmat = falses(natoms, natoms)
             for bond in residue_item["Bond"]
                 i, j = [
-                    key ∈ ["to", "from"] ? parse(Int, value) + 1 : atom_index[value]
+                    key ∈ ["to", "from"] ? parse(Int, value) + 1 : atom_index[sanitized(value)]
                     for (key, value) in LightXML.attributes_dict(bond)
                 ]
                 adjmat[i, j] = adjmat[j, i] = true
@@ -134,8 +136,6 @@ function ForceField(xml_file)
     return ForceField(atom_types, bonds, angles, dihedrals, impropers,
                       nonbonded, templates, lj₁₋₄, coulomb₁₋₄)
 end
-
-sanitized(str) = replace(replace(replace(str, "-" => "_"), "'" => "p"), "*" => "a")
 
 function pdb_aliases(pdb_aliases_file)
     name(element) = LightXML.attribute(element, "name")
@@ -166,6 +166,7 @@ function System(file, force_field)
     num_atoms = size(topology)
     num_residues = Chemfiles.count_residues(topology)
     atoms = [Chemfiles.Atom(topology, index) for index = 0:num_atoms-1]
+    Chemfiles.set_name!.(atoms, (sanitized∘Chemfiles.name).(atoms))
     residues = [Chemfiles.Residue(topology, index) for index = 0:num_residues-1]
     residue_atoms = map((x -> x .+ 1) ∘ Chemfiles_atoms, residues)
     atom_residues = Vector{Int}(undef, num_atoms)
@@ -193,7 +194,7 @@ function System(file, force_field)
     for index = 1:num_residues
         residue = residues[index]
         atom_indices = residue_atoms[index]
-        atom_names = (sanitized∘Chemfiles.name).(atoms[atom_indices])
+        atom_names = Chemfiles.name.(atoms[atom_indices])
         residue_name = Chemfiles.name(residue)
         if is_std_pdb[index]
             new_chain = Chemfiles.property(residue, "chainid") != chain_id
