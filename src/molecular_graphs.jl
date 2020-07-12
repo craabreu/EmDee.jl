@@ -74,5 +74,5 @@ function canonical_form(matrix, colors; atol=0.1)
         (Ptr{UInt64}, Ptr{Cint}, Ptr{Cint}, Ptr{Cint}, Ref{OptionBlk}, Ref{StatsBlk}, Cint, Cint, Ptr{UInt64}),
         g.chunks, lab, ptn, orbits, option_block, StatsBlk(), m, n, cg.chunks
     )
-    return reverse(lab .+ 1), graph2matrix(cg)[n:-1:1, n:-1:1]
+    return lab .+ 1, graph2matrix(cg)
 end
