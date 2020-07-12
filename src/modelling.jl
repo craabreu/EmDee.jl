@@ -62,6 +62,8 @@ const PERIODIC_TORSION = LittleDict(
     :periodicity2 => Int, :phase2 => Float64, :k2 => Float64,
     :periodicity3 => Int, :phase3 => Float64, :k3 => Float64,
     :periodicity4 => Int, :phase4 => Float64, :k4 => Float64,
+    :periodicity5 => Int, :phase5 => Float64, :k5 => Float64,
+    :periodicity6 => Int, :phase6 => Float64, :k6 => Float64,
 )
 
 const NONBONDED = LittleDict(
@@ -79,6 +81,7 @@ function DataFrame(category, element_list, key)
     for dict in attribute_dicts(element_list, key)
         append!(df, merge(zeros, dict))
     end
+    # TODO: remove all empty columns
     return df
 end
 
@@ -112,14 +115,12 @@ function ForceField(xml_file)
                 ]
                 adjmat[i, j] = adjmat[j, i] = true
             end
-            println(LightXML.attribute(residue_item, "name"), " ", natoms)
-            natoms > 64 && return nothing
-            order, adjmat = canonical_form(adjmat, Chemfiles.mass.(atoms))
             residue_name = LightXML.attribute(residue_item, "name")
+            order, adjmat = canonical_form(adjmat, Chemfiles.mass.(atoms))
             templates[residue_name] = ResidueTemplate(atoms[order], adjmat)
         end
     end
-    return nothing
+
     bonds = DataFrame(HARMONIC_BOND, xroot["HarmonicBondForce"], "Bond")
     angles = DataFrame(HARMONIC_ANGLE, xroot["HarmonicAngleForce"], "Angle")
     dihedrals = DataFrame(PERIODIC_TORSION, xroot["PeriodicTorsionForce"], "Proper")
@@ -225,8 +226,6 @@ function System(file, force_field)
         atom_masses = Chemfiles.mass.(atoms[indices])
         canonical_order, canonical_matrix = canonical_form(matrix, atom_masses)
         matches = [n for (n, t) in force_field.templates if t.adjacency == canonical_matrix]
-        println(canonical_matrix)
-        println(force_field.templates["ADE"].adjacency)
         name = Chemfiles.name(residue)
         length(matches) == 0 &&
             error("No force field templates matched residue $(name)")

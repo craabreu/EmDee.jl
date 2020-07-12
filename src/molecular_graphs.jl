@@ -44,16 +44,26 @@ end
     invarsuclevel::Cint=0
 end
 
+mutable struct Graph
+    n::Int
+    m::Int
+    chunks::Vector{UInt64}
+end
+
 function matrix2graph(matrix)
     n = size(matrix, 1)
     nw = WORDSIZE*cld(n, WORDSIZE)
-    return vcat(falses(nw-n, n), matrix[n:-1:1,:])
+    expanded = vcat(matrix, falses(nw-n, n))
+    expanded.chunks .= expanded[end:-1:1, end:-1:1].chunks[end:-1:1]
+    return expanded
 end
 
 function graph2matrix(graph)
     n = size(graph, 2)
     nw = WORDSIZE*cld(n, WORDSIZE)
-    return graph[nw:-1:nw-n+1,:]
+    reverted = BitArray{2}(undef, size(graph)...)
+    reverted.chunks = graph.chunks[end:-1:1]
+    return reverted[end:-1:end+1-n, end:-1:end+1-n]
 end
 
 function canonical_form(matrix, colors; atol=0.1)
