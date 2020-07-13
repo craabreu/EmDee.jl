@@ -1,5 +1,9 @@
 export ForceField, System
 
+# TODO list:
+# 1. Implement Dissulfide bond assignment
+# 2. Check whether graph canonicalization isn't working for nucleic acids with CHARMM
+
 import LightXML
 import Chemfiles
 using DataFrames
@@ -23,52 +27,6 @@ struct ResidueTemplate
     end
 end
 
-mutable struct Residue
-    atoms::Vector{Chemfiles.Atom}
-    bonds::Vector{Set{String}}
-    Residue() = new([], [])
-    Residue(residue) = new(copy(residue.atoms), copy(residue.bonds))
-end
-
-sanitized(str) = replace(replace(replace(str, "-" => "_"), "'" => "p"), "*" => "a")
-
-function AddAtom!(residue, attributes)
-    atom = Chemfiles.Atom(sanitized(attributes["name"]))
-    charge = convert(Float64, get(attributes, "charge", 0))
-    Chemfiles.set_charge!(atom, charge)
-    Chemfiles.set_type!(atom, attributes["type"])
-    push!(residue.atoms, atom)
-end
-
-function AddBond!(residue, attributes)
-    push!(residue.bonds, Set(sanitized.(values(attributes))))
-end
-
-function ChangeAtom!(residue, attributes)
-    name = sanitized(attributes["name"])
-    for atom in residue.atoms
-        if Chemfiles.name(atom) == name
-            charge = convert(Float64, get(attributes, "charge", 0))
-            Chemfiles.set_charge!(atom, charge)
-            Chemfiles.set_type!(atom, attributes["type"])
-            return nothing
-        end
-    end
-end
-
-function RemoveAtom!(residue, attributes)
-    name = sanitized(attributes["name"])
-    residue.atoms = filter(atom -> Chemfiles.name(atom) !== name, residue.atoms)
-end
-
-function RemoveBond!(residue, attributes)
-    bond = Set(sanitized.(attributes[a] for a in ["atomName1", "atomName2"]))
-    residue.bonds = filter(x -> x != bond, residue.bonds)
-end
-
-function RemoveExternalBond!(residue, attributes)
-end
-
 struct ForceField
     atom_types::DataFrame
     bond_types::DataFrame
@@ -79,21 +37,6 @@ struct ForceField
     templates::OrderedDict{String,ResidueTemplate}
     lj₁₋₄::Float64
     coulomb₁₋₄::Float64
-end
-
-if isdefined(Chemfiles, :atoms)
-    Chemfiles_atoms(residue::Chemfiles.Residue) = Chemfiles.atoms(residue)
-else
-    function Chemfiles_atoms(residue::Chemfiles.Residue)
-        count = size(residue)
-        result = Array{UInt64}(undef, count)
-        Chemfiles.__check(Chemfiles.lib.chfl_residue_atoms(
-            Chemfiles.__const_ptr(residue),
-            pointer(result),
-            count,
-        ))
-        return result
-    end
 end
 
 const ATOM_TYPE = LittleDict(
@@ -128,6 +71,61 @@ const PERIODIC_TORSION = LittleDict(
 const NONBONDED = LittleDict(
     :type => String, :charge => Float64, :sigma => Float64, :epsilon => Float64,
 )
+
+mutable struct Residue
+    atoms
+    bonds
+    external_bonds
+    Residue() = new([], [], [])
+    Residue(atoms, bonds, external_bonds) = new(atoms, bonds, external_bonds)
+end
+
+Base.copy(r::Residue) = Residue(copy(r.atoms), copy(r.bonds), copy(r.external_bonds))
+
+sanitized(str) = replace(replace(replace(str, "-" => "_"), "'" => "p"), "*" => "a")
+
+function AddAtom!(residue, attributes)
+    atom = Chemfiles.Atom(sanitized(attributes["name"]))
+    charge = convert(Float64, get(attributes, "charge", 0))
+    Chemfiles.set_charge!(atom, charge)
+    Chemfiles.set_type!(atom, attributes["type"])
+    push!(residue.atoms, atom)
+end
+
+function AddBond!(residue, attributes)
+    push!(residue.bonds, Set(sanitized.(values(attributes))))
+end
+
+function AddExternalBond!(residue, attributes)
+    push!(residue.external_bonds, sanitized(attributes["atomName"]))
+end
+
+function ChangeAtom!(residue, attributes)
+    name = sanitized(attributes["name"])
+    for atom in residue.atoms
+        if Chemfiles.name(atom) == name
+            charge = convert(Float64, get(attributes, "charge", 0))
+            Chemfiles.set_charge!(atom, charge)
+            Chemfiles.set_type!(atom, attributes["type"])
+            return nothing
+        end
+    end
+end
+
+function RemoveAtom!(residue, attributes)
+    atom = sanitized(attributes["name"])
+    residue.atoms = filter(x -> Chemfiles.name(x) ≠ atom, residue.atoms)
+end
+
+function RemoveBond!(residue, attributes)
+    bond = Set(sanitized.(attributes[a] for a in ["atomName1", "atomName2"]))
+    residue.bonds = filter(x -> x ≠ bond, residue.bonds)
+end
+
+function RemoveExternalBond!(residue, attributes)
+    atom = sanitized(attributes["atomName"])
+    residue.external_bonds = filter(x -> x ≠ atom, residue.external_bonds)
+end
 
 Base.convert(::Type{T}, x::S) where {T<:Number,S<:AbstractString} = parse(T, x)
 
@@ -173,13 +171,20 @@ function ForceField(xml_file)
                 ]
                 AddBond!(residue, Dict(["atomName1", "atomName2"] .=> atom_names))
             end
+            for bond in residue_item["ExternalBond"]
+                attributes = LightXML.attributes_dict(bond)
+                if haskey(attributes, "from")
+                    attributes["atomName"] = names[parse(Int, attributes["from"])+1]
+                end
+                AddExternalBond!(residue, attributes)
+            end
             residue_name = LightXML.attribute(residue_item, "name")
             templates[residue_name] = ResidueTemplate(residue, type_masses)
             for item in residue_item["AllowPatch"]
                 patch = LightXML.attribute(item, "name")
-                patched_residue = Residue(residue)
+                patched_residue = copy(residue)
                 for (action, attributes) in patches[patch]
-                    getfield(Main, action)(patched_residue, attributes)
+                    getfield(@__MODULE__, action)(patched_residue, attributes)
                 end
                 templates["$residue_name($patch)"] = ResidueTemplate(patched_residue, type_masses)
             end
@@ -211,6 +216,21 @@ end
 
 const PDB_MASSES, PDB_REGEX_CODES, PDB_STD_BONDS =
     pdb_aliases(joinpath(@__DIR__, "data", "pdb_aliases.xml"))
+
+if isdefined(Chemfiles, :atoms)
+    Chemfiles_atoms(residue::Chemfiles.Residue) = Chemfiles.atoms(residue)
+else
+    function Chemfiles_atoms(residue::Chemfiles.Residue)
+        count = size(residue)
+        result = Array{UInt64}(undef, count)
+        Chemfiles.__check(Chemfiles.lib.chfl_residue_atoms(
+            Chemfiles.__const_ptr(residue),
+            pointer(result),
+            count,
+        ))
+        return result
+    end
+end
 
 function System(file, force_field)
     trajectory = Chemfiles.Trajectory(file)
@@ -288,6 +308,11 @@ function System(file, force_field)
         canonical_order, canonical_matrix = canonical_form(matrix, atom_masses)
         matches = [n for (n, t) in force_field.templates if t.adjacency == canonical_matrix]
         name = Chemfiles.name(residue)
+        # println(Chemfiles.name.(atoms[indices][canonical_order]))
+        # println(Chemfiles.name.(force_field.templates["ADE"].atoms))
+        # println.(size.([canonical_matrix, force_field.templates["ADE"].adjacency]))
+        # println(canonical_matrix)
+        # println(force_field.templates["ADE"].adjacency)
         length(matches) == 0 &&
             error("No force field templates matched residue $(name)")
         length(matches) > 1 &&

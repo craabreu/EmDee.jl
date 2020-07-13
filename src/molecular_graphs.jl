@@ -44,12 +44,6 @@ end
     invarsuclevel::Cint=0
 end
 
-mutable struct Graph
-    n::Int
-    m::Int
-    chunks::Vector{UInt64}
-end
-
 function matrix2graph(matrix)
     n = size(matrix, 1)
     nw = WORDSIZE*cld(n, WORDSIZE)
