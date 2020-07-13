@@ -5,9 +5,29 @@ import Chemfiles
 using DataFrames
 using OrderedCollections
 
+struct Patch
+    AddAtom::LittleDict
+    ChangeAtom::LittleDict
+    RemoveAtom::Vector{String}
+    AddBond::Vector{Tuple{String,String}}
+    RemoveBond::Vector{Tuple{String,String}}
+end
+
 struct ResidueTemplate
     atoms::Vector{Chemfiles.Atom}
     adjacency::BitArray{2}
+
+    function ResidueTemplate(atoms, bonds)
+        natoms = length(atoms)
+        atom_index = LittleDict(Chemfiles.name.(atoms) .=> 1:natoms)
+        adjmat = falses(natoms, natoms)
+        for atom_pair in bonds
+            i, j = [atom_index[atom] for atom in atom_pair]
+            adjmat[i, j] = adjmat[j, i] = true
+        end
+        order, adjmat = canonical_form(adjmat, Chemfiles.mass.(atoms))
+        return new(atoms[order], adjmat)
+    end
 end
 
 struct ForceField
@@ -95,7 +115,7 @@ function ForceField(xml_file)
     for elem in xroot["Residues"]
         for (residue_index, residue_item) in enumerate(elem["Residue"])
             atoms = []
-            atom_index = LittleDict()
+            names = []
             for (index, atom_item) in enumerate(residue_item["Atom"])
                 attributes = LightXML.attributes_dict(atom_item)
                 name = sanitized(attributes["name"])
@@ -106,20 +126,16 @@ function ForceField(xml_file)
                 Chemfiles.set_charge!(atom, charge)
                 Chemfiles.set_mass!(atom, atom_types[type_index[type], :].mass)
                 push!(atoms, atom)
-                atom_index[name] = index
+                push!(names, name)
             end
-            natoms = length(atoms)
-            adjmat = falses(natoms, natoms)
-            for bond in residue_item["Bond"]
-                i, j = [
-                    key ∈ ["to", "from"] ? parse(Int, value) + 1 : atom_index[sanitized(value)]
+            bonds = [
+                [
+                    key ∈ ["to", "from"] ? names[parse(Int, value)+1] : sanitized(value)
                     for (key, value) in LightXML.attributes_dict(bond)
                 ]
-                adjmat[i, j] = adjmat[j, i] = true
-            end
-            residue_name = LightXML.attribute(residue_item, "name")
-            order, adjmat = canonical_form(adjmat, Chemfiles.mass.(atoms))
-            templates[residue_name] = ResidueTemplate(atoms[order], adjmat)
+                for bond in residue_item["Bond"]
+            ]
+            templates[LightXML.attribute(residue_item, "name")] = ResidueTemplate(atoms, bonds)
         end
     end
 
