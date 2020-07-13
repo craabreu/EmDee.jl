@@ -2,7 +2,7 @@ export ForceField, System
 
 # TODO list:
 # 1. Implement Dissulfide bond assignment
-# 2. Check whether graph canonicalization isn't working for nucleic acids with CHARMM
+# 2. Check why graph canonicalization isn't working for nucleic acids with CHARMM
 
 import LightXML
 import Chemfiles
@@ -232,7 +232,7 @@ else
     end
 end
 
-function System(file, force_field)
+function System(file, force_field; disambiguation=Dict())
     trajectory = Chemfiles.Trajectory(file)
     frame = read(trajectory)
     unit_cell = Chemfiles.UnitCell(frame)
@@ -303,20 +303,23 @@ function System(file, force_field)
         end
     end
 
-    for (residue, indices, matrix) in zip(residues, residue_atoms, adjacency_matrices)
+    for resid = 1:num_residues
+        residue = residues[resid]
+        indices = residue_atoms[resid]
+        matrix = adjacency_matrices[resid]
         atom_masses = Chemfiles.mass.(atoms[indices])
         canonical_order, canonical_matrix = canonical_form(matrix, atom_masses)
         matches = [n for (n, t) in force_field.templates if t.adjacency == canonical_matrix]
         name = Chemfiles.name(residue)
-        # println(Chemfiles.name.(atoms[indices][canonical_order]))
-        # println(Chemfiles.name.(force_field.templates["ADE"].atoms))
-        # println.(size.([canonical_matrix, force_field.templates["ADE"].adjacency]))
-        # println(canonical_matrix)
-        # println(force_field.templates["ADE"].adjacency)
         length(matches) == 0 &&
-            error("No force field templates matched residue $(name)")
-        length(matches) > 1 &&
-            error("Multiple force field templates $(matches) matched residue $(name)")
+            error("No force field templates matched residue $resid ($(name))")
+        if length(matches) > 1
+            haskey(disambiguation, resid) ||
+                error("Multiple force field templates $(matches) matched residue $resid ($(name))")
+            disambiguation[resid] in matches ||
+                error("Provided disambiguation for residue $resid ($(name)) is not in $(matches)")
+            matches = [disambiguation[resid]]
+        end
         template_atoms = force_field.templates[matches[1]].atoms
         for (i, a) in zip(indices[canonical_order], template_atoms)
             Chemfiles.set_property!(atoms[i], "ff.type", Chemfiles.type(a))
