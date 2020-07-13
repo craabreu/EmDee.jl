@@ -5,29 +5,68 @@ import Chemfiles
 using DataFrames
 using OrderedCollections
 
-struct Patch
-    AddAtom::LittleDict
-    ChangeAtom::LittleDict
-    RemoveAtom::Vector{String}
-    AddBond::Vector{Tuple{String,String}}
-    RemoveBond::Vector{Tuple{String,String}}
-end
-
 struct ResidueTemplate
     atoms::Vector{Chemfiles.Atom}
     adjacency::BitArray{2}
 
-    function ResidueTemplate(atoms, bonds)
-        natoms = length(atoms)
-        atom_index = LittleDict(Chemfiles.name.(atoms) .=> 1:natoms)
+    function ResidueTemplate(residue, type_masses)
+        natoms = length(residue.atoms)
+        atom_index = LittleDict(Chemfiles.name.(residue.atoms) .=> 1:natoms)
         adjmat = falses(natoms, natoms)
-        for atom_pair in bonds
+        for atom_pair in residue.bonds
             i, j = [atom_index[atom] for atom in atom_pair]
             adjmat[i, j] = adjmat[j, i] = true
         end
-        order, adjmat = canonical_form(adjmat, Chemfiles.mass.(atoms))
-        return new(atoms[order], adjmat)
+        atom_masses = [type_masses[Chemfiles.type(atom)] for atom in residue.atoms]
+        order, adjmat = canonical_form(adjmat, atom_masses)
+        return new(residue.atoms[order], adjmat)
     end
+end
+
+mutable struct Residue
+    atoms::Vector{Chemfiles.Atom}
+    bonds::Vector{Set{String}}
+    Residue() = new([], [])
+    Residue(residue) = new(copy(residue.atoms), copy(residue.bonds))
+end
+
+sanitized(str) = replace(replace(replace(str, "-" => "_"), "'" => "p"), "*" => "a")
+
+function AddAtom!(residue, attributes)
+    atom = Chemfiles.Atom(sanitized(attributes["name"]))
+    charge = convert(Float64, get(attributes, "charge", 0))
+    Chemfiles.set_charge!(atom, charge)
+    Chemfiles.set_type!(atom, attributes["type"])
+    push!(residue.atoms, atom)
+end
+
+function AddBond!(residue, attributes)
+    push!(residue.bonds, Set(sanitized.(values(attributes))))
+end
+
+function ChangeAtom!(residue, attributes)
+    name = sanitized(attributes["name"])
+    for atom in residue.atoms
+        if Chemfiles.name(atom) == name
+            charge = convert(Float64, get(attributes, "charge", 0))
+            Chemfiles.set_charge!(atom, charge)
+            Chemfiles.set_type!(atom, attributes["type"])
+            return nothing
+        end
+    end
+end
+
+function RemoveAtom!(residue, attributes)
+    name = sanitized(attributes["name"])
+    residue.atoms = filter(atom -> Chemfiles.name(atom) !== name, residue.atoms)
+end
+
+function RemoveBond!(residue, attributes)
+    bond = Set(sanitized.(attributes[a] for a in ["atomName1", "atomName2"]))
+    residue.bonds = filter(x -> x != bond, residue.bonds)
+end
+
+function RemoveExternalBond!(residue, attributes)
 end
 
 struct ForceField
@@ -105,50 +144,55 @@ function DataFrame(category, element_list, key)
     return df
 end
 
-sanitized(str) = replace(replace(replace(str, "-" => "_"), "'" => "p"), "*" => "a")
-
 function ForceField(xml_file)
     xroot = LightXML.root(LightXML.parse_file(xml_file))
+    patches = LittleDict(
+        LightXML.attribute(item, "name") => [
+            Symbol(LightXML.name(child)*"!") => LightXML.attributes_dict(child)
+            for child in LightXML.child_elements(item)
+        ]
+        for elem in xroot["Patches"] for item in elem["Patch"]
+    )
     atom_types = DataFrame(ATOM_TYPE, xroot["AtomTypes"], "Type")
     type_index = LittleDict(atom_types.name .=> collect(1:nrow(atom_types)))
+    type_masses = LittleDict(atom_types.name .=> atom_types.mass)
     templates = OrderedDict{String,ResidueTemplate}()
     for elem in xroot["Residues"]
         for (residue_index, residue_item) in enumerate(elem["Residue"])
-            atoms = []
+            residue = Residue()
             names = []
             for (index, atom_item) in enumerate(residue_item["Atom"])
                 attributes = LightXML.attributes_dict(atom_item)
-                name = sanitized(attributes["name"])
-                type = attributes["type"]
-                charge = convert(Float64, get(attributes, "charge", 0))
-                atom = Chemfiles.Atom(name)
-                Chemfiles.set_type!(atom, type)
-                Chemfiles.set_charge!(atom, charge)
-                Chemfiles.set_mass!(atom, atom_types[type_index[type], :].mass)
-                push!(atoms, atom)
-                push!(names, name)
+                push!(names, attributes["name"])
+                AddAtom!(residue, attributes)
             end
-            bonds = [
-                [
-                    key ∈ ["to", "from"] ? names[parse(Int, value)+1] : sanitized(value)
+            for bond in residue_item["Bond"]
+                atom_names = [
+                    key ∈ ["to", "from"] ? names[parse(Int, value)+1] : value
                     for (key, value) in LightXML.attributes_dict(bond)
                 ]
-                for bond in residue_item["Bond"]
-            ]
-            templates[LightXML.attribute(residue_item, "name")] = ResidueTemplate(atoms, bonds)
+                AddBond!(residue, Dict(["atomName1", "atomName2"] .=> atom_names))
+            end
+            residue_name = LightXML.attribute(residue_item, "name")
+            templates[residue_name] = ResidueTemplate(residue, type_masses)
+            for item in residue_item["AllowPatch"]
+                patch = LightXML.attribute(item, "name")
+                patched_residue = Residue(residue)
+                for (action, attributes) in patches[patch]
+                    getfield(Main, action)(patched_residue, attributes)
+                end
+                templates["$residue_name($patch)"] = ResidueTemplate(patched_residue, type_masses)
+            end
         end
     end
-
     bonds = DataFrame(HARMONIC_BOND, xroot["HarmonicBondForce"], "Bond")
     angles = DataFrame(HARMONIC_ANGLE, xroot["HarmonicAngleForce"], "Angle")
     dihedrals = DataFrame(PERIODIC_TORSION, xroot["PeriodicTorsionForce"], "Proper")
     impropers = DataFrame(PERIODIC_TORSION, xroot["PeriodicTorsionForce"], "Improper")
     nonbonded = DataFrame(NONBONDED, xroot["NonbondedForce"], "Atom")
-
     scaling_factors = LightXML.attributes_dict(xroot["NonbondedForce"][1])
     lj₁₋₄ = get(scaling_factors, "lj14scale", 1.0)
     coulomb₁₋₄ = get(scaling_factors, "coulomb14scale", 1.0)
-
     return ForceField(atom_types, bonds, angles, dihedrals, impropers,
                       nonbonded, templates, lj₁₋₄, coulomb₁₋₄)
 end
